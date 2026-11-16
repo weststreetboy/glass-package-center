@@ -1,0 +1,13 @@
+services:
+  glass-package-center:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: glass-package-center:latest
+    container_name: glass-package-center
+    restart: unless-stopped
+    ports:
+      # 左侧为群晖对外端口，按实际改；右侧 80 为容器内端口，勿动
+      - "8380:80"
+    environment:
+      - TZ=Asia/Shanghai
