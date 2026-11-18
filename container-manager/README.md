@@ -24,6 +24,14 @@ sudo docker compose pull
 sudo docker compose up -d
 ```
 
+**改「套件来源」地址（无需重建镜像）**：打开一次带参数的地址即可，之后本机自动记住：
+
+```
+http://<群晖IP>:8380/?source=https%3A%2F%2Fpkg.example.com%2Fsspks%2F
+```
+
+参数值需 URL 编码。来源页有「重置」按钮可恢复默认演示地址。详见仓库根目录 README 的 4.2 节。
+
 **换页面 / 换 SPK 但不重建镜像**：取消文件末尾 `volumes` 段的注释，并在同目录建立：
 
 ```

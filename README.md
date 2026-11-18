@@ -22,7 +22,7 @@
 - 套件浏览：网格卡片 + 详情弹窗（版本 / 架构 / 最低 DSM / 渠道 / 来源）
 - 筛选搜索：关键词、分类（网络 / 多媒体 / 工具 / 系统 / 开发 / 安全）、架构（x86_64 / armv8 / noarch）、渠道（稳定 / 测试）
 - 一键下载：直接下载对应 `.spk` 安装包
-- 套件来源：展示 SSPKS 源地址，一键复制，并附 DSM 添加来源的操作步骤
+- 套件来源：展示 SSPKS 源地址，一键复制，并附 DSM 添加来源的操作步骤；地址可用 `?source=` 运行时替换并记住，无需重建镜像
 - 明暗主题：跟随系统，可手动切换（右下角按钮）
 - **设置面板**：实时调节玻璃材质（模糊、透明度、圆角、描边、反光等），对应页面上的「设置」
 - 响应式：桌面Dock导航 / 移动Rail导航，适配手机与平板
@@ -199,17 +199,27 @@ src/*.tsx,*.ts  --npm run build-->  dist/  --node scripts/build-standalone.mjs--
 
 右上角「设置」按钮打开玻璃材质面板，可实时调节：模糊强度、背景透明度、圆角、描边、反光/高光、阴影等。仅影响当前浏览器，刷新后恢复默认（不写入存储）。
 
-### 4.2 修改套件来源地址
+### 4.2 修改套件来源地址（无需重建镜像）
 
-来源地址出现在首页「套件来源」页与复制按钮中。两处需保持一致：
+来源地址出现在「套件来源」页与复制按钮中。优先级从高到低：
 
-- **源码**：`src/packages.data.ts` 末尾的 `export const SOURCE = {...}` → 修改 `url` 为你 NAS 上的 SSPKS 源地址（例如 `https://pkg.example.com/sspks/`）。
-- **重新生成**：运行 `scripts/sync-packages.py` 时，用环境变量覆盖：
+1. **链接参数（推荐）**：访问下面的地址，来源立即生效并写入本浏览器的 localStorage，参数会自动从地址栏移除。以后直接打开首页即可；换地址只需换参数再访问一次。
 
-  ```bash
-  DSM_SOURCE_URL=https://pkg.example.com/sspks/ python3 scripts/sync-packages.py
-  ```
+   ```
+   http://<群晖IP>:8380/?source=https%3A%2F%2Fpkg.example.com%2Fsspks%2F
+   ```
 
+   `source` 的值要做 URL 编码（`https://` → `https%3A%2F%2F`）。不带协议时按 `http://` 处理，仅允许 http / https。
+
+2. **本机记忆**：上一次通过链接设置的值会一直保留。点来源页的「重置」按钮可清除并恢复默认演示地址。
+3. **代码默认值**：`src/packages.data.ts` 末尾的 `export const SOURCE = {...}` 的 `url` 字段。需要修改出厂默认值时，改这里，或重新生成数据时传环境变量：
+
+   ```bash
+   DSM_SOURCE_URL=https://pkg.example.com/sspks/ python3 scripts/sync-packages.py
+   npm run build && node scripts/build-standalone.mjs
+   ```
+
+> 该设置只保存在当前浏览器，不影响其他设备，也不写回镜像。
 > 注意：云端演示地址 `https://dsm-package-center.app.workbuddy.host/` 受平台网关限制，DSM 套件中心握手请在 NAS 本机完成，不要用该演示地址做真实添加。
 
 ### 4.3 从你的 SSPKS 源重新生成套件数据

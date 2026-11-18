@@ -72,6 +72,73 @@ const PKG_LABELS: Record<string, string> = {
 };
 const displayPkgId = (p: Pkg) => PKG_LABELS[p.en] ?? p.en;
 
+const SOURCE_KEY = "wb_gpc_source_url";
+type SourceCfg = {
+  url: string;
+  note: string;
+  custom: boolean;
+  origin: "link" | "saved" | "default";
+};
+
+function normalizeSourceUrl(raw: string): string {
+  const value = raw.trim();
+  if (!value) return "";
+  const candidate = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)
+    ? value
+    : `http://${value}`;
+  try {
+    const u = new URL(candidate);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function readSource(): SourceCfg {
+  const fallback: SourceCfg = {
+    url: SOURCE.url,
+    note: SOURCE.note,
+    custom: false,
+    origin: "default",
+  };
+  try {
+    const params = new URLSearchParams(window.location.search);
+    let fromLink = false;
+    if (params.has("source")) {
+      const next = normalizeSourceUrl(params.get("source") || "");
+      if (next) {
+        window.localStorage.setItem(SOURCE_KEY, next);
+        fromLink = true;
+      }
+      try {
+        const clean = new URL(window.location.href);
+        clean.searchParams.delete("source");
+        window.history.replaceState(
+          null,
+          "",
+          `${clean.pathname}${clean.search}${clean.hash}`,
+        );
+      } catch {
+        /* file:// 等场景可能不允许改写地址，忽略 */
+      }
+    }
+    const saved = normalizeSourceUrl(
+      window.localStorage.getItem(SOURCE_KEY) || "",
+    );
+    if (saved) {
+      return {
+        url: saved,
+        note: `当前地址来自${fromLink ? "本次访问链接" : "本机保存的设置"}，只存在此浏览器里；DSM 套件中心需在 NAS 本机添加来源。点「重置」恢复默认演示地址。`,
+        custom: true,
+        origin: fromLink ? "link" : "saved",
+      };
+    }
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 const bounded = (value: number, min: number, max: number, fallback: number) =>
   Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
 const normalize = (v: Partial<GlassSettings>): GlassSettings => ({
@@ -124,6 +191,7 @@ export default function PackagesWorkspace({
   const [alerts, setAlerts] = useState(false);
   const [backgroundFailed, setBackgroundFailed] = useState(false);
   const [selected, setSelected] = useState<Pkg | null>(null);
+  const [source, setSource] = useState<SourceCfg>(readSource);
 
   useEffect(
     () => setMaterial(normalize(defaults)),
@@ -219,7 +287,7 @@ export default function PackagesWorkspace({
     setLocalTheme(isDark ? "light" : "dark");
   }
   function copySource() {
-    const text = SOURCE.url;
+    const text = source.url;
     const done = () => setNotice("套件来源地址已复制");
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
@@ -234,6 +302,20 @@ export default function PackagesWorkspace({
     ta.select();
     try { document.execCommand("copy"); done(); } catch { /* ignore */ }
     document.body.removeChild(ta);
+  }
+  function resetSource() {
+    try {
+      window.localStorage.removeItem(SOURCE_KEY);
+    } catch {
+      /* 隐私模式下可能禁用存储，忽略 */
+    }
+    setSource({
+      url: SOURCE.url,
+      note: SOURCE.note,
+      custom: false,
+      origin: "default",
+    });
+    setNotice("已恢复默认套件来源地址");
   }
   function download(p: Pkg) {
     const a = document.createElement("a");
@@ -568,11 +650,18 @@ export default function PackagesWorkspace({
                     <span className="gw-savings-orb"><Layers size={28} strokeWidth={1.3} aria-hidden="true" /></span>
                     <div>
                       <p>套件来源地址</p>
-                      <strong className="pc-source-strong">{SOURCE.url}</strong>
+                      <strong className="pc-source-strong">{source.url}</strong>
                     </div>
-                    <button type="button" className="gw-button pc-copy" onClick={copySource}>
-                      <Copy size={14} aria-hidden="true" />复制
-                    </button>
+                    <div className="pc-source-actions">
+                      <button type="button" className="gw-button pc-copy" onClick={copySource}>
+                        <Copy size={14} aria-hidden="true" />复制
+                      </button>
+                      {source.custom && (
+                        <button type="button" className="gw-button pc-copy" onClick={resetSource}>
+                          <X size={14} aria-hidden="true" />重置
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <section className="gw-panel gw-reveal">
                     <div className="gw-panel-title">
@@ -587,7 +676,7 @@ export default function PackagesWorkspace({
                   </section>
                   <section className="gw-savings-note gw-reveal pc-source-note">
                     <Info size={18} aria-hidden="true" />
-                    <p>{SOURCE.note}</p>
+                    <p>{source.note}</p>
                   </section>
                 </>
               )}
@@ -639,7 +728,7 @@ export default function PackagesWorkspace({
                       </p>
                       <a
                         className="gw-button pc-about-link"
-                        href={SOURCE.url}
+                        href={source.url}
                         target="_blank"
                         rel="noreferrer"
                       >
@@ -817,6 +906,7 @@ const pcStyles = `
 .pc-list-row .gw-button{padding:7px 11px;font-size:10px !important;border-radius:7px}
 .pc-source-strong{font-size:clamp(15px,1.8vw,22px) !important;font-weight:500 !important;letter-spacing:-0.02em !important;word-break:break-all}
 .pc-copy{white-space:nowrap}
+.pc-source-actions{display:flex;gap:8px;flex:none}
 .pc-steps{list-style:none;counter-reset:step;display:flex;flex-direction:column;gap:16px}
 .pc-steps li{counter-increment:step;display:flex;flex-direction:column;gap:3px;padding-left:42px;position:relative}
 .pc-steps li:before{content:counter(step);position:absolute;left:0;top:0;width:28px;height:28px;border-radius:50%;background:var(--gw-income-surface);color:var(--gw-accent);display:grid;place-items:center;font-size:12px;font-weight:600}
