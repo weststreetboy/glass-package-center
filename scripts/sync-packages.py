@@ -15,9 +15,10 @@
 
 生成后重新构建： npm run build && node scripts/build-standalone.mjs
 """
-import os, io, re, sys, json, tarfile, base64, shutil
+import os, io, re, sys, json, tarfile, base64, shutil, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+SCRIPTS_DIR = HERE
 ROOT = os.path.dirname(HERE)
 
 PACKAGES_DIR = os.environ.get("PACKAGES_DIR") or os.path.join(ROOT, "webroot", "packages")
@@ -245,6 +246,16 @@ def main():
     with open(DATA_TS, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
     print(f"\n[ok] 生成 {DATA_TS}  套件数={len(pkgs)}")
+
+    # 同步生成 DSM 套件中心协议清单（webroot/dsm/*.json）
+    # 这样套件增删后，DSM 来源看到的安装包列表会一起更新。
+    dsm_script = os.path.join(SCRIPTS_DIR, "build-dsm-index.py")
+    if os.path.isfile(dsm_script):
+        print("\n[next] 同步 DSM 套件来源清单 ...")
+        subprocess.run([sys.executable, dsm_script], check=True)
+    else:
+        print(f"\n[warn] 未找到 {dsm_script}，跳过 DSM 清单生成")
+
     print("[next] npm run build && node scripts/build-standalone.mjs")
 
 

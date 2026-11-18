@@ -15,14 +15,16 @@
 | 技术栈 | Vite 6 + React 18 + TypeScript + GSAP + lucide-react |
 | 数据来源 | `src/packages.data.ts`（由脚本从真实 SPK 生成，内嵌进单文件） |
 | 下载 | 指向同级 `packages/` 目录内的真实 `.spk` 文件 |
-| 依赖 | 无后端、无数据库、无外部 CDN，离线可用（除文档外链） |
+| DSM 来源 | **容器即合规 SSPKS 源**：nginx 识别 `?unique=synology_...` 协议请求并返回标准包清单，可直接被 DSM 套件中心添加（见 4.4） |
+| 依赖 | 无 PHP、无数据库、无外部 CDN；静态清单 + nginx 复刻 SSPKS 协议 |
 
 **已实现功能**
 
 - 套件浏览：网格卡片 + 详情弹窗（版本 / 架构 / 最低 DSM / 渠道 / 来源）
 - 筛选搜索：关键词、分类（网络 / 多媒体 / 工具 / 系统 / 开发 / 安全）、架构（x86_64 / armv8 / noarch）、渠道（稳定 / 测试）
 - 一键下载：直接下载对应 `.spk` 安装包
-- 套件来源：展示 SSPKS 源地址，一键复制，并附 DSM 添加来源的操作步骤；地址可用 `?source=` 运行时替换并记住，无需重建镜像
+- **DSM 套件来源**：容器直接作为合规来源被 DSM 添加（修复「无效的位置」）；清单按架构自动分发，下载链接动态适配 IP/端口/反代
+- 套件来源页：展示当前站点地址，一键复制；地址可用 `?source=` 或页面内修改，无需重建镜像
 - 明暗主题：跟随系统，可手动切换（右下角按钮）
 - **设置面板**：实时调节玻璃材质（模糊、透明度、圆角、描边、反光等），对应页面上的「设置」
 - **SPK 工作室**：左侧第二个「打包」入口，浏览器本地生成 DSM 7 的 `.spk`（INFO / package.tgz / 64+256 图标 / MD5 checksum），无需后端，文件不上传
@@ -222,8 +224,7 @@ src/*.tsx,*.ts  --npm run build-->  dist/  --node scripts/build-standalone.mjs--
    npm run build && node scripts/build-standalone.mjs
    ```
 
-> 该设置只保存在当前浏览器，不影响其他设备，也不写回镜像。
-> 注意：当前容器只提供展示页与 SPK 下载，**不含 `synology_models` 索引**，因此自动识别出的页面地址不能直接作为 DSM 套件来源。若要在 DSM 里真正添加来源，请用「修改」填入 NAS 上真实的 SSPKS 源地址（例如部署的 SSPKS-IMNKS 服务地址）。
+> 该设置只保存在当前浏览器，不影响其他设备，也不写回镜像。它只决定「套件来源」页**展示**的地址，与 DSM 实际握手无关；DSM 握手由服务端 nginx 完成，见 4.4。
 
 ### 4.3 从你的 SSPKS 源重新生成套件数据
 
@@ -242,18 +243,42 @@ python3 scripts/sync-packages.py
 npm run build && node scripts/build-standalone.mjs
 ```
 
-脚本会：递归扫描所有 `.spk` → 按「包名 + 版本 + 架构 + 体积」去重（正式 `packages/` 优先）→ 过滤超过 `MAX_SIZE_MB` 的大包 → 解析 `INFO` 与图标 → 生成 `src/packages.data.ts` → 复制 SPK 到 `webroot/packages/` 与根目录 `packages/`。
+脚本会：递归扫描所有 `.spk` → 按「包名 + 版本 + 架构 + 体积」去重（正式 `packages/` 优先）→ 过滤超过 `MAX_SIZE_MB` 的大包 → 解析 `INFO` 与图标 → 生成 `src/packages.data.ts` → 复制 SPK 到 `webroot/packages/` 与根目录 `packages/` → **自动调用 `build-dsm-index.py` 重建 DSM 来源清单**（`webroot/dsm/*.json`）。
 
 已存在的套件会**保留** `packages.data.ts` 中人工整理的中文名称、描述与分类，新套件则用内置中文兜底，不会被英文覆盖。
+
+> 也可以单独重建 DSM 清单（例如只调整了包文件）：`python3 scripts/build-dsm-index.py`。清单里的下载链接用 `__DSM_ORIGIN__` 占位符，由 nginx 在响应时替换成实际访问的 `协议://主机:端口`，因此换 IP、换端口、加反代都无需改清单。
 
 > 当前收录 6 个套件（HelloPkg、LocalDemo、MyApp、SSPKS-IMNKS 套件中心 × 3 个架构）。`daye-nav` 两个包各约 215 MB，超过 GitHub 单文件 100 MB 上限，已被体积过滤排除；如需收录请使用外链托管或 Git LFS。
 
 ### 4.4 在 DSM 套件中心添加来源
 
-1. DSM 桌面 → **套件中心** → 右上角 **设置**。
-2. 「套件来源」→ **新增**。
-3. 名称随意（如 `本地套件源`），来源地址填写你的 SSPKS 源 URL（须能访问到 `synology_models` 与 `.spk`）。
-4. 确定后，套件中心会拉取并显示来源中的套件。
+**本容器本身就是一个合规的 DSM 套件来源**，无需另装 SSPKS/PHP 服务。nginx 会识别 DSM 的协议请求（`?unique=synology_...`）并返回标准包清单，所以直接用本容器地址即可——这正是修复「无效的位置」的关键。
+
+1. DSM 桌面 → **套件中心** → 右上角 **设置** → 「套件来源」→ **新增**。
+2. 名称随意（如 `玻璃套件中心`），**来源地址填写本容器的访问地址**，例如：
+
+   ```
+   http://192.168.50.4:13801/
+   ```
+
+   结尾斜杠可有可无；不要加 `/index.html` 或 `/packages`。
+3. 确定后通过校验，左侧「社群」标签下会出现来源中的套件（HelloPkg、LocalDemo、MyApp、SSPKS-IMNKS 套件中心）。
+4. 若安装时报发布者不受信任：套件中心 → 设置 → 一般设置 → 信任层级选「**任何发行者**」。
+
+**部署后自检**（在浏览器打开，能给出 JSON 即说明协议层生效）：
+
+```
+http://192.168.50.4:13801/dsm/synology-x86_64.json
+```
+
+若 DSM 仍提示「无效的位置」，按顺序排查：
+- 版本是否为新镜像：`docker images | grep glass-package-center`，确认是本次更新后的版本；旧镜像是纯静态页，必然报无效。
+- 容器日志：`docker logs glass-package-center`，确认 nginx 正常启动且配置已加载。
+- 地址是否为容器对外端口（`13801` 或你自定义的主机端口），不是 `8380` 默认值时以实际映射为准。
+- 从 NAS 本机 curl 验证：`curl 'http://127.0.0.1:13801/?unique=synology_x86_64_test_Model&arch=x86_64&major=7&minor=2&build=64570&language=chs'` 应返回 `{"packages":[...]}`。
+
+**原理**：原生 SSPKS 依赖 PHP（`synology_models` + `index.php`），本容器用静态清单 + nginx `map`/`sub_filter` 复刻了同一协议，因此不再需要 PHP 后端。清单按架构分为 noarch / x86_64 / armv8 三份，由 `arch` 参数自动分发。
 
 ---
 
@@ -270,6 +295,7 @@ npm run build && node scripts/build-standalone.mjs
 | 拉取 GHCR 镜像失败 | 确认 NAS 可访问 ghcr.io（网络/DNS/代理）；公开镜像无需登录。可先在 SSH 试 `sudo docker pull ghcr.io/weststreetboy/glass-package-center:latest`。 |
 | 项目导入后起不来 | 确认文件名就是 `docker-compose.yml`、且直接位于所选文件夹根目录（别藏在子目录）；端口冲突时改冒号左侧端口；确认 NAS 可访问 ghcr.io。 |
 | 端口 8380 打不开 | 端口被占用或防火墙拦截。换 `-p 9000:80` 等未被占用端口，并在 DSM 防火墙放行。 |
+| 添加来源提示「无效的位置」 | 镜像版本过旧（旧版是纯静态页，无法握手）。更新到含 DSM 协议层的新镜像；浏览器打开 `http://<地址>/dsm/synology-x86_64.json` 能返回 JSON 即正常。详见 4.4。 |
 
 ---
 
@@ -289,10 +315,12 @@ glass-package-center/
 │   └── packages.data.ts        # 套件数据（脚本生成）
 ├── scripts/
 │   ├── build-standalone.mjs    # 内联为单文件
-│   └── sync-packages.py        # 从 SPK 生成数据
+│   ├── sync-packages.py        # 从 SPK 生成数据（自动联动 DSM 清单）
+│   └── build-dsm-index.py      # 生成 DSM 协议清单 webroot/dsm/*.json
 ├── webroot/                    # ★ 可直接部署的成品
 │   ├── index.html              # 单文件页面
-│   └── packages/*.spk          # 下载包
+│   ├── packages/*.spk          # 下载包
+│   └── dsm/*.json              # DSM 套件来源协议清单（按架构分发）
 ├── container-manager/          # ★ 图形界面导入项目（GHCR 镜像版）
 │   ├── docker-compose.yml      #   只下载这一个文件即可，无需命令
 │   └── README.md               #   三步部署 / 更新 / 挂载说明
