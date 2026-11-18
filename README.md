@@ -11,6 +11,7 @@
 | 项目 | 说明 |
 | --- | --- |
 | 形态 | 单个 HTML 文件（`webroot/index.html`，约 305 KB），双击即可打开 |
+| 现成镜像 | `ghcr.io/weststreetboy/glass-package-center:latest`（amd64 / arm64 双架构，公开免登录） |
 | 技术栈 | Vite 6 + React 18 + TypeScript + GSAP + lucide-react |
 | 数据来源 | `src/packages.data.ts`（由脚本从真实 SPK 生成，内嵌进单文件） |
 | 下载 | 指向同级 `packages/` 目录内的真实 `.spk` 文件 |
@@ -30,9 +31,56 @@
 
 ## 二、群晖部署（DSM 7）
 
-提供两条路径。**新手用方案 A，熟悉 Docker 用方案 B。**
+提供三条路径。**最省事用方案 A（直接拉取我发布的镜像，一条命令搞定）；不装 Docker 用方案 B；想自己改代码构建用方案 C。**
 
-### 方案 A：Web Station（最简单，无需 Docker）
+### 方案 A：直接拉取已发布镜像（★ 推荐，零构建）
+
+镜像已发布到公开仓库 `ghcr.io/weststreetboy/glass-package-center`，**amd64 / arm64 双架构**，群晖 Intel 与 ARM 机型通用，拉取无需登录。
+
+镜像地址：
+
+```
+ghcr.io/weststreetboy/glass-package-center:latest
+```
+
+**A1 · Container Manager 图形界面**
+
+1. DSM → **Container Manager → 注册表**，确认 ghcr.io 可访问（首次可在「注册表 → 新增」里选 GitHub 直接拉取公开镜像，无需填密钥）。
+2. **容器 → 新增**，镜像来源填上面的地址，标签选 `latest`。
+3. 端口设置：本机端口填 `8380`，容器端口 `80`（TCP）。
+4. 命名如 `glass-package-center`，勾选「向导完成后启动」，应用。
+5. 浏览器打开 `http://<群晖IP>:8380/`。
+
+**A2 · SSH 命令行（最快）**
+
+```bash
+# 拉取镜像（自动选对应架构）
+sudo docker pull ghcr.io/weststreetboy/glass-package-center:latest
+
+# 启动容器：8380 是对外端口，可改成你想要的
+sudo docker run -d \
+  --name glass-package-center \
+  --restart unless-stopped \
+  -p 8380:80 \
+  ghcr.io/weststreetboy/glass-package-center:latest
+
+# 验证
+sudo docker ps | grep glass-package-center
+```
+
+> 更新镜像：
+> ```bash
+> sudo docker pull ghcr.io/weststreetboy/glass-package-center:latest
+> sudo docker stop glass-package-center && sudo docker rm glass-package-center
+> sudo docker run -d --name glass-package-center --restart unless-stopped \
+>   -p 8380:80 ghcr.io/weststreetboy/glass-package-center:latest
+> ```
+>
+> 若拉不到：确认 NAS 能访问 ghcr.io（部分网络环境需配置代理或 DNS）。镜像为公开包，正常情况下无需 `docker login`。
+
+---
+
+### 方案 B：Web Station（无需 Docker）
 
 1. 群晖 **控制面板 → Web Station → 网页服务**，确认已启用，PHP 选任意版本即可（本页是纯静态，用不到 PHP）。
 2. 通过 File Station 在 `web` 共享文件夹下新建目录，例如 `web/package-center`。
@@ -53,11 +101,13 @@
 
 > 想用 HTTPS / 域名：在 **控制面板 → 登录门户 → 高级 → 反向代理服务器** 新增规则，把域名（如 `pkg.example.com`）反代到 `http://localhost:8380`，再在域名上套 Let's Encrypt 证书即可。
 
-### 方案 B：Docker / Container Manager（推荐）
+### 方案 C：自己构建镜像 / Container Manager 项目（可选）
 
-镜像基于 `nginx:1.27-alpine`，已配好 SPA 回退、SPK 附件下载头、gzip 与安全头。
+适用于要改代码或改页面后自行重建镜像的场景。镜像基于 `nginx:1.27-alpine`，已配好 SPA 回退、SPK 附件下载头、gzip 与安全头。
 
-**B1 · Container Manager 图形界面**
+> 若只是部署现成页面，**用方案 A 即可，跳过本节**。本节构建的镜像与已发布的 GHCR 镜像功能相同。
+
+**C1 · Container Manager 图形界面**
 
 1. DSM **Container Manager → 项目 → 新增**。
 2. 项目路径：选择包含本仓库的文件夹（`docker-compose.yml` 位于 `deploy/` 子目录）。
@@ -65,7 +115,7 @@
 4. 端口冲突时，把 `deploy/docker-compose.yml` 中 `"8380:80"` 左侧改成未占用端口（右侧 `80` 勿动）。
 5. 勾选「启动后创建项目」。构建完成后访问 `http://<群晖IP>:8380/`。
 
-**B2 · SSH 命令行**
+**C2 · SSH 命令行**
 
 ```bash
 # 1) 把仓库放到群晖，例如 /volume6/docker/glass-package-center
@@ -184,6 +234,8 @@ npm run build && node scripts/build-standalone.mjs
 | 改了页面但没变化 | 首页设了 `no-cache`，仍不生效请强刷（Ctrl+F5）或重建镜像。 |
 | 架构筛选不全 | `src/packages.data.ts` 的 `arch` 字段来自 SPK 的 `arch`；重跑 `sync-packages.py` 更新。 |
 | Docker 构建失败 | 确认在仓库根目录执行，且 `webroot/` 与 `deploy/` 均存在；群晖 Docker 版本过低时升级 Container Manager。 |
+| 拉取 GHCR 镜像失败 | 确认 NAS 可访问 ghcr.io（网络/DNS/代理）；公开镜像无需登录。可先在 SSH 试 `sudo docker pull ghcr.io/weststreetboy/glass-package-center:latest`。 |
+| 端口 8380 打不开 | 端口被占用或防火墙拦截。换 `-p 9000:80` 等未被占用端口，并在 DSM 防火墙放行。 |
 
 ---
 
