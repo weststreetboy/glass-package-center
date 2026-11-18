@@ -25,6 +25,7 @@ import {
   Layers,
   Moon,
   Package,
+  Pencil,
   Search,
   Settings2,
   ShieldCheck,
@@ -97,13 +98,36 @@ function normalizeSourceUrl(raw: string): string {
   }
 }
 
+function currentSiteUrl(): string {
+  // 部署后默认把「当前站点根地址」作为套件来源，避免一直显示写死的演示地址。
+  // 仅file://（本地双击打开）回退到演示地址；http(s) 一律用当前 origin + pathname。
+  try {
+    const u = new URL(window.location.href);
+    if (u.protocol === "http:" || u.protocol === "https:") {
+      const path = u.pathname.replace(/\/index\.html$/i, "").replace(/\/+$/, "");
+      return `${u.origin}${path}/`;
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
 function readSource(): SourceCfg {
-  const fallback: SourceCfg = {
-    url: SOURCE.url,
-    note: SOURCE.note,
-    custom: false,
-    origin: "default",
-  };
+  const site = currentSiteUrl();
+  const fallback: SourceCfg = site
+    ? {
+        url: site,
+        note: `此地址为当前站点的访问地址，自动识别。若你的 SSPKS 源是另一个地址，请点「修改」直接填写并保存；DSM 套件中心需在 NAS 本机添加来源。`,
+        custom: false,
+        origin: "default",
+      }
+    : {
+        url: SOURCE.url,
+        note: SOURCE.note,
+        custom: false,
+        origin: "default",
+      };
   try {
     const params = new URLSearchParams(window.location.search);
     let fromLink = false;
@@ -195,6 +219,8 @@ export default function PackagesWorkspace({
   const [backgroundFailed, setBackgroundFailed] = useState(false);
   const [selected, setSelected] = useState<Pkg | null>(null);
   const [source, setSource] = useState<SourceCfg>(readSource);
+  const [editingSource, setEditingSource] = useState(false);
+  const [sourceDraft, setSourceDraft] = useState("");
 
   useEffect(
     () => setMaterial(normalize(defaults)),
@@ -312,13 +338,36 @@ export default function PackagesWorkspace({
     } catch {
       /* 隐私模式下可能禁用存储，忽略 */
     }
+    const site = currentSiteUrl();
     setSource({
-      url: SOURCE.url,
-      note: SOURCE.note,
+      url: site || SOURCE.url,
+      note: site
+        ? `已恢复为当前站点地址。若你的 SSPKS 源是另一个地址，请点「修改」直接填写。`
+        : SOURCE.note,
       custom: false,
       origin: "default",
     });
-    setNotice("已恢复默认套件来源地址");
+    setNotice("已恢复为当前站点地址");
+  }
+  function applySourceEdit() {
+    const next = normalizeSourceUrl(sourceDraft);
+    if (!next) {
+      setNotice("地址无效，请使用 http:// 或 https:// 开头的地址");
+      return;
+    }
+    try {
+      window.localStorage.setItem(SOURCE_KEY, next);
+    } catch {
+      /* 隐私模式下可能禁用存储，忽略 */
+    }
+    setSource({
+      url: next,
+      note: "当前地址已保存到本机浏览器，刷新后依然生效；DSM 套件中心需在 NAS 本机添加来源。",
+      custom: true,
+      origin: "saved",
+    });
+    setEditingSource(false);
+    setNotice("套件来源地址已保存");
   }
   function download(p: Pkg) {
     const a = document.createElement("a");
@@ -661,18 +710,54 @@ export default function PackagesWorkspace({
                 <>
                   <div className="gw-savings-intro gw-reveal">
                     <span className="gw-savings-orb"><Layers size={28} strokeWidth={1.3} aria-hidden="true" /></span>
-                    <div>
+                    <div className="pc-source-main">
                       <p>套件来源地址</p>
-                      <strong className="pc-source-strong">{source.url}</strong>
+                      {editingSource ? (
+                        <input
+                          className="pc-source-input"
+                          value={sourceDraft}
+                          autoFocus
+                          spellCheck={false}
+                          aria-label="套件来源地址"
+                          placeholder="https://your-nas.example.com/sspks/"
+                          onChange={(e) => setSourceDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") applySourceEdit();
+                            if (e.key === "Escape") setEditingSource(false);
+                          }}
+                        />
+                      ) : (
+                        <strong className="pc-source-strong">{source.url}</strong>
+                      )}
                     </div>
                     <div className="pc-source-actions">
-                      <button type="button" className="gw-button pc-copy" onClick={copySource}>
-                        <Copy size={14} aria-hidden="true" />复制
-                      </button>
-                      {source.custom && (
-                        <button type="button" className="gw-button pc-copy" onClick={resetSource}>
-                          <X size={14} aria-hidden="true" />重置
-                        </button>
+                      {editingSource ? (
+                        <>
+                          <button type="button" className="gw-button pc-copy" onClick={applySourceEdit}>
+                            <Check size={14} aria-hidden="true" />保存
+                          </button>
+                          <button type="button" className="gw-button pc-copy" onClick={() => setEditingSource(false)}>
+                            <X size={14} aria-hidden="true" />取消
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button type="button" className="gw-button pc-copy" onClick={copySource}>
+                            <Copy size={14} aria-hidden="true" />复制
+                          </button>
+                          <button
+                            type="button"
+                            className="gw-button pc-copy"
+                            onClick={() => { setSourceDraft(source.url); setEditingSource(true); }}
+                          >
+                            <Pencil size={14} aria-hidden="true" />修改
+                          </button>
+                          {source.custom && (
+                            <button type="button" className="gw-button pc-copy" onClick={resetSource}>
+                              <X size={14} aria-hidden="true" />重置
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
@@ -917,9 +1002,11 @@ const pcStyles = `
 .pc-list-name span{font-size:10px;color:var(--gw-muted)}
 .pc-list-size{font-size:10px;color:var(--gw-muted);white-space:nowrap}
 .pc-list-row .gw-button{padding:7px 11px;font-size:10px !important;border-radius:7px}
+.pc-source-main{min-width:0;flex:1}
 .pc-source-strong{font-size:clamp(15px,1.8vw,22px) !important;font-weight:500 !important;letter-spacing:-0.02em !important;word-break:break-all}
+.pc-source-input{width:100%;font-size:clamp(13px,1.5vw,17px) !important;padding:8px 10px;border:1px solid var(--gw-accent) !important;border-radius:8px !important;background:var(--gw-panel) !important;color:var(--gw-text) !important}
 .pc-copy{white-space:nowrap}
-.pc-source-actions{display:flex;gap:8px;flex:none}
+.pc-source-actions{display:flex;gap:8px;flex:none;flex-wrap:wrap}
 .pc-steps{list-style:none;counter-reset:step;display:flex;flex-direction:column;gap:16px}
 .pc-steps li{counter-increment:step;display:flex;flex-direction:column;gap:3px;padding-left:42px;position:relative}
 .pc-steps li:before{content:counter(step);position:absolute;left:0;top:0;width:28px;height:28px;border-radius:50%;background:var(--gw-income-surface);color:var(--gw-accent);display:grid;place-items:center;font-size:12px;font-weight:600}

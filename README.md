@@ -204,7 +204,8 @@ src/*.tsx,*.ts  --npm run build-->  dist/  --node scripts/build-standalone.mjs--
 
 来源地址出现在「套件来源」页与复制按钮中。优先级从高到低：
 
-1. **链接参数（推荐）**：访问下面的地址，来源立即生效并写入本浏览器的 localStorage，参数会自动从地址栏移除。以后直接打开首页即可；换地址只需换参数再访问一次。
+1. **页面内直接修改（最简单）**：打开「套件来源」页 → 点「修改」→ 填入你的真实 SSPKS 地址 → 点「保存」（或按回车）。立即生效并写入本浏览器，刷新后依然保留。点「重置」恢复到当前站点地址。
+2. **链接参数**：访问下面的地址，来源立即生效并写入本浏览器的 localStorage，参数会自动从地址栏移除。
 
    ```
    http://<群晖IP>:8380/?source=https%3A%2F%2Fpkg.example.com%2Fsspks%2F
@@ -212,8 +213,9 @@ src/*.tsx,*.ts  --npm run build-->  dist/  --node scripts/build-standalone.mjs--
 
    `source` 的值要做 URL 编码（`https://` → `https%3A%2F%2F`）。不带协议时按 `http://` 处理，仅允许 http / https。
 
-2. **本机记忆**：上一次通过链接设置的值会一直保留。点来源页的「重置」按钮可清除并恢复默认演示地址。
-3. **代码默认值**：`src/packages.data.ts` 末尾的 `export const SOURCE = {...}` 的 `url` 字段。需要修改出厂默认值时，改这里，或重新生成数据时传环境变量：
+3. **本机记忆**：上一次设置的值会一直保留。
+4. **自动识别（默认）**：没有任何设置时，页面自动把当前访问地址作为来源（例如 NAS 上打开 `http://192.168.1.10:8380/`，来源页就显示这个地址）。仅本地 `file://` 双击打开时回退到代码里的演示地址。
+5. **代码兜底值**：`src/packages.data.ts` 末尾的 `export const SOURCE = {...}` 的 `url` 字段。需要修改出厂兜底值时，改这里，或重新生成数据时传环境变量：
 
    ```bash
    DSM_SOURCE_URL=https://pkg.example.com/sspks/ python3 scripts/sync-packages.py
@@ -221,7 +223,7 @@ src/*.tsx,*.ts  --npm run build-->  dist/  --node scripts/build-standalone.mjs--
    ```
 
 > 该设置只保存在当前浏览器，不影响其他设备，也不写回镜像。
-> 注意：云端演示地址 `https://dsm-package-center.app.workbuddy.host/` 受平台网关限制，DSM 套件中心握手请在 NAS 本机完成，不要用该演示地址做真实添加。
+> 注意：当前容器只提供展示页与 SPK 下载，**不含 `synology_models` 索引**，因此自动识别出的页面地址不能直接作为 DSM 套件来源。若要在 DSM 里真正添加来源，请用「修改」填入 NAS 上真实的 SSPKS 源地址（例如部署的 SSPKS-IMNKS 服务地址）。
 
 ### 4.3 从你的 SSPKS 源重新生成套件数据
 
