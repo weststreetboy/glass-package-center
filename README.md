@@ -25,6 +25,7 @@
 - 套件来源：展示 SSPKS 源地址，一键复制，并附 DSM 添加来源的操作步骤；地址可用 `?source=` 运行时替换并记住，无需重建镜像
 - 明暗主题：跟随系统，可手动切换（右下角按钮）
 - **设置面板**：实时调节玻璃材质（模糊、透明度、圆角、描边、反光等），对应页面上的「设置」
+- **SPK 工作室**：左侧第二个「打包」入口，浏览器本地生成 DSM 7 的 `.spk`（INFO / package.tgz / 64+256 图标 / MD5 checksum），无需后端，文件不上传
 - 响应式：桌面Dock导航 / 移动Rail导航，适配手机与平板
 
 ---
@@ -225,16 +226,25 @@ src/*.tsx,*.ts  --npm run build-->  dist/  --node scripts/build-standalone.mjs--
 ### 4.3 从你的 SSPKS 源重新生成套件数据
 
 ```bash
-# 指向你自己的 SPK 目录
+# 单个目录
 PACKAGES_DIR=/volume1/sspks/packages \
 DSM_SOURCE_URL=https://pkg.example.com/sspks/ \
+python3 scripts/sync-packages.py
+
+# 多个目录（逗号分隔，递归扫描），并过滤超过 100 MB 的大包
+PACKAGES_DIR=/volume1/sspks/packages,/volume1/build/_local \
+MAX_SIZE_MB=100 \
 python3 scripts/sync-packages.py
 
 # 重新构建单文件
 npm run build && node scripts/build-standalone.mjs
 ```
 
-脚本会：解析每个 `.spk` 的 `INFO` 与图标 → 归一化架构族 → 生成 `src/packages.data.ts` → 复制 SPK 到 `webroot/packages/`。
+脚本会：递归扫描所有 `.spk` → 按「包名 + 版本 + 架构 + 体积」去重（正式 `packages/` 优先）→ 过滤超过 `MAX_SIZE_MB` 的大包 → 解析 `INFO` 与图标 → 生成 `src/packages.data.ts` → 复制 SPK 到 `webroot/packages/` 与根目录 `packages/`。
+
+已存在的套件会**保留** `packages.data.ts` 中人工整理的中文名称、描述与分类，新套件则用内置中文兜底，不会被英文覆盖。
+
+> 当前收录 6 个套件（HelloPkg、LocalDemo、MyApp、SSPKS-IMNKS 套件中心 × 3 个架构）。`daye-nav` 两个包各约 215 MB，超过 GitHub 单文件 100 MB 上限，已被体积过滤排除；如需收录请使用外链托管或 Git LFS。
 
 ### 4.4 在 DSM 套件中心添加来源
 
@@ -271,6 +281,8 @@ glass-package-center/
 ├── src/
 │   ├── main.tsx                # 主题令牌、明暗切换、挂载
 │   ├── PackagesWorkspace.tsx   # 主界面与交互
+│   ├── SpkStudio.tsx           # SPK 工作室（前端打包界面）
+│   ├── spkBuilder.ts           # USTAR tar / gzip / MD5 / INFO 生成
 │   ├── gw-styles.ts            # 玻璃拟态样式
 │   └── packages.data.ts        # 套件数据（脚本生成）
 ├── scripts/

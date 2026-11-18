@@ -33,9 +33,11 @@ import {
   Boxes,
   Info,
   HardDrive,
+  Hammer,
 } from "lucide-react";
 import { styles } from "./gw-styles";
 import { PACKAGES, SOURCE, type Pkg } from "./packages.data";
+import SpkStudio from "./SpkStudio";
 
 gsap.registerPlugin(useGSAP);
 
@@ -57,6 +59,7 @@ const defaults: GlassSettings = {
 
 const tabs = [
   { id: "browse", label: "套件", icon: Home },
+  { id: "studio", label: "打包", icon: Hammer },
   { id: "installed", label: "已收录", icon: Boxes },
   { id: "source", label: "套件来源", icon: Layers },
   { id: "about", label: "关于", icon: Info },
@@ -344,7 +347,11 @@ export default function PackagesWorkspace({
             if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
             e.preventDefault();
             const next =
-              e.key === "Home" ? 0 : e.key === "End" ? 3 : (i + (e.key === "ArrowRight" ? 1 : 3)) % 4;
+              e.key === "Home"
+                ? 0
+                : e.key === "End"
+                  ? tabs.length - 1
+                  : (i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length;
             changeView(tabs[next].id);
             (e.currentTarget.parentElement?.children[next] as HTMLButtonElement)?.focus();
           }}
@@ -359,7 +366,7 @@ export default function PackagesWorkspace({
   const pkgCard = (p: Pkg) => (
     <article
       className="pc-card gw-panel gw-reveal"
-      key={p.id}
+      key={p.file}
       tabIndex={0}
       role="button"
       aria-label={`查看 ${p.name} 详情`}
@@ -488,20 +495,24 @@ export default function PackagesWorkspace({
                 <p className="gw-greeting">
                   {view === "browse"
                     ? "浏览可用套件，一键下载安装。"
-                    : view === "installed"
-                      ? "当前套件源收录的全部套件。"
-                      : view === "source"
-                        ? "把此地址添加到 DSM 套件中心。"
-                        : "关于这个套件中心演示。"}
+                    : view === "studio"
+                      ? "在浏览器里打包你自己的 DSM 7 套件。"
+                      : view === "installed"
+                        ? "当前套件源收录的全部套件。"
+                        : view === "source"
+                          ? "把此地址添加到 DSM 套件中心。"
+                          : "关于这个套件中心演示。"}
                 </p>
                 <h1>
                   {view === "browse"
                     ? "套件中心"
-                    : view === "installed"
-                      ? "已收录套件"
-                      : view === "source"
-                        ? "套件来源"
-                        : "关于"}
+                    : view === "studio"
+                      ? "SPK 工作室"
+                      : view === "installed"
+                        ? "已收录套件"
+                        : view === "source"
+                          ? "套件来源"
+                          : "关于"}
                 </h1>
               </div>
               <div className="gw-heading-action">
@@ -604,6 +615,8 @@ export default function PackagesWorkspace({
                 </>
               )}
 
+              {view === "studio" && <SpkStudio />}
+
               {view === "installed" && (
                 <section className="gw-panel gw-reveal">
                   <div className="gw-panel-title">
@@ -618,7 +631,7 @@ export default function PackagesWorkspace({
                   </div>
                   <div className="pc-list">
                     {visible.length ? visible.map((p) => (
-                      <div className="pc-list-row" key={p.id}>
+                      <div className="pc-list-row" key={p.file}>
                         {p.icon ? <img className="pc-icon-sm" src={p.icon} alt="" /> : <span className="pc-icon-sm pc-icon-fallback"><Package size={15} /></span>}
                         <div className="pc-list-name">
                           <strong>{p.name}</strong>
