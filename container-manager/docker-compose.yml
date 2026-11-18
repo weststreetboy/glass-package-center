@@ -1,0 +1,27 @@
+# 玻璃套件中心 · 群晖 Container Manager 项目文件
+# 直接引用已发布的 GHCR 镜像：无需构建、无需登录、无需敲命令。
+#
+# 用法：
+#   1. 只下载本文件（docker-compose.yml），不必下载整个仓库
+#   2. 在 NAS 上新建项目目录，例如 /volume1/docker/gpc/，把本文件放进去
+#   3. Container Manager → 项目 → 新增 → 项目路径选该目录 → 完成
+#   4. 浏览器打开 http://<群晖IP>:8380/
+#
+# 端口冲突：把下面 "8380:80" 的左侧 8380 改成未占用端口，右侧 80 勿动。
+# 镜像：ghcr.io/weststreetboy/glass-package-center:latest（amd64 / arm64 双架构，公开）
+
+services:
+  glass-package-center:
+    image: ghcr.io/weststreetboy/glass-package-center:latest
+    container_name: glass-package-center
+    restart: unless-stopped
+    ports:
+      - "8380:80"
+    environment:
+      - TZ=Asia/Shanghai
+
+    # 可选：不改镜像直接热替换页面 / SPK 包。
+    # 取消注释后，在本文件同级建立 webroot/index.html 与 webroot/packages/ 即可。
+    # volumes:
+    #   - ./webroot/index.html:/usr/share/nginx/html/index.html:ro
+    #   - ./webroot/packages:/usr/share/nginx/html/packages:ro

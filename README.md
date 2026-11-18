@@ -31,7 +31,7 @@
 
 ## 二、群晖部署（DSM 7）
 
-提供三条路径。**最省事用方案 A（直接拉取我发布的镜像，一条命令搞定）；不装 Docker 用方案 B；想自己改代码构建用方案 C。**
+提供三条路径。**最省事用方案 A（直接拉取我发布的现成镜像，其中「项目导入」连命令都不用敲）；不装 Docker 用方案 B；想自己改代码构建用方案 C。**
 
 ### 方案 A：直接拉取已发布镜像（★ 推荐，零构建）
 
@@ -51,7 +51,18 @@ ghcr.io/weststreetboy/glass-package-center:latest
 4. 命名如 `glass-package-center`，勾选「向导完成后启动」，应用。
 5. 浏览器打开 `http://<群晖IP>:8380/`。
 
-**A2 · SSH 命令行（最快）**
+**A2 · Container Manager 项目导入（★ 最省事，连命令都不用敲）**
+
+仓库里的 `container-manager/` 目录已备好一个只引用 GHCR 镜像的 `docker-compose.yml`，用它导入项目即可，Container Manager 会自动拉镜像并启动。
+
+1. 从仓库下载 **`container-manager/docker-compose.yml` 这一个文件**（不用下载整个仓库）。
+2. 在 NAS 上新建文件夹，例如 `/volume1/docker/gpc/`，把文件放进去，文件名保持 `docker-compose.yml`。
+3. **Container Manager → 项目 → 新增**：项目路径选刚建的文件夹，来源选「使用现有的 docker-compose.yml」，勾选启动后创建项目。
+4. 完成后访问 `http://<群晖IP>:8380/`。端口被占用就先编辑文件，把 `"8380:80"` 的左侧改成未占用端口。
+
+> 更新：项目页选中该项目 → **重新部署 / 更新**（重新拉取 `latest`）。详细步骤与可选挂载见 `container-manager/README.md`。
+
+**A3 · SSH 命令行（最快）**
 
 ```bash
 # 拉取镜像（自动选对应架构）
@@ -122,7 +133,7 @@ sudo docker ps | grep glass-package-center
 cd /volume6/docker/glass-package-center
 
 # 2) 调整对外端口（按需）
-sed -i 's/8380:80/8380:80/' deploy/docker-compose.yml
+sed -i 's/8380:80/9000:80/' deploy/docker-compose.yml   # 示例：改成 9000 端口
 
 # 3) 构建并后台启动
 sudo docker compose -f deploy/docker-compose.yml up -d --build
@@ -235,6 +246,7 @@ npm run build && node scripts/build-standalone.mjs
 | 架构筛选不全 | `src/packages.data.ts` 的 `arch` 字段来自 SPK 的 `arch`；重跑 `sync-packages.py` 更新。 |
 | Docker 构建失败 | 确认在仓库根目录执行，且 `webroot/` 与 `deploy/` 均存在；群晖 Docker 版本过低时升级 Container Manager。 |
 | 拉取 GHCR 镜像失败 | 确认 NAS 可访问 ghcr.io（网络/DNS/代理）；公开镜像无需登录。可先在 SSH 试 `sudo docker pull ghcr.io/weststreetboy/glass-package-center:latest`。 |
+| 项目导入后起不来 | 确认文件名就是 `docker-compose.yml`、且直接位于所选文件夹根目录（别藏在子目录）；端口冲突时改冒号左侧端口；确认 NAS 可访问 ghcr.io。 |
 | 端口 8380 打不开 | 端口被占用或防火墙拦截。换 `-p 9000:80` 等未被占用端口，并在 DSM 防火墙放行。 |
 
 ---
@@ -257,6 +269,9 @@ glass-package-center/
 ├── webroot/                    # ★ 可直接部署的成品
 │   ├── index.html              # 单文件页面
 │   └── packages/*.spk          # 下载包
+├── container-manager/          # ★ 图形界面导入项目（GHCR 镜像版）
+│   ├── docker-compose.yml      #   只下载这一个文件即可，无需命令
+│   └── README.md               #   三步部署 / 更新 / 挂载说明
 └── deploy/
     ├── Dockerfile
     ├── docker-compose.yml
