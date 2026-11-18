@@ -48,6 +48,10 @@ CN_OVERRIDES = {
         "name": "我的应用",
         "desc": "SSPKS-IMNKS 仓库的示例应用套件，可用于验证套件安装流程。",
     },
+    "crabapple-panel_x86_64-7.0_2.0.3-0016.spk": {
+        "name": "Crabapple 导航面板",
+        "desc": "Crabapple Panel 局域网导航站 · Go 后端 + SQLite，内置备份还原与数据库自愈；0016 精简版（不含图标库与壁纸），管理端口 13800。",
+    },
 }
 
 SOURCE_NOTE = ("此地址为已部署的演示实例；真实部署请填写你 NAS 上 SSPKS 的来源地址。"
