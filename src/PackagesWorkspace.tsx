@@ -216,7 +216,6 @@ export default function PackagesWorkspace({
   const [channel, setChannel] = useState<string>("全部");
   const [notice, setNotice] = useState("");
   const [alerts, setAlerts] = useState(false);
-  const [backgroundFailed, setBackgroundFailed] = useState(false);
   const [selected, setSelected] = useState<Pkg | null>(null);
   const [source, setSource] = useState<SourceCfg>(readSource);
   const [editingSource, setEditingSource] = useState(false);
@@ -233,7 +232,6 @@ export default function PackagesWorkspace({
         ?.querySelector<HTMLButtonElement>(".gw-material button")
         ?.focus();
   }, [settingsOpen]);
-  useEffect(() => setBackgroundFailed(false), [backgroundImage]);
   useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(""), 3200);
@@ -486,10 +484,7 @@ export default function PackagesWorkspace({
     >
       <style>{styles}</style>
       <style>{pcStyles}</style>
-      {backgroundImage && !backgroundFailed && (
-        <img className="gw-room" src={backgroundImage} alt="" onError={() => setBackgroundFailed(true)} />
-      )}
-      <div className="gw-room-shade" aria-hidden="true" />
+      {/* 背景由页面级 .gpc-backdrop 统一提供，这里不再叠加局部图片与遮罩 */}
       <div className="gw-workspace">
         <header className="gw-topbar gw-glass">
           <a
@@ -838,9 +833,6 @@ export default function PackagesWorkspace({
               )}
             </div>
 
-            <footer className="gw-footer">
-              <span><i />套件中心 v2 · 玻璃版 · 底层沿用 SSPKS-IMNKS 套件源</span>
-            </footer>
             <div className="gw-desktop-dock">{nav()}</div>
           </main>
         </div>

@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import PackagesWorkspace from "./PackagesWorkspace";
+import DoodleCrewFooter from "./DoodleCrewFooter";
 
 const hostTokens = `
 :root {
@@ -65,6 +66,38 @@ const backgroundImage =
   </g>
 </svg>`);
 
+// 全站只保留一层背景：固定在视口上的渐变图 + 22% 底色遮罩。
+// 主工作区与页脚共用它，避免两处各自裁切图片导致交界处出现色带。
+const pageBackdrop = document.createElement("style");
+pageBackdrop.textContent = `
+html { background-color: var(--color-background); }
+body { background: transparent; }
+#root { position: relative; z-index: 1; }
+.gpc-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.gpc-backdrop img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 56%;
+}
+.gpc-backdrop span {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--color-background) 22%, transparent);
+}
+html[data-host-theme="dark"] .gpc-backdrop span {
+  background: color-mix(in srgb, var(--color-background) 58%, transparent);
+}
+`;
+document.head.appendChild(pageBackdrop);
+
 (function bindHostTheme() {
   const mq = window.matchMedia("(prefers-color-scheme: dark)");
   let hostTheme: "light" | "dark" = mq.matches ? "dark" : "light";
@@ -96,11 +129,18 @@ const backgroundImage =
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <PackagesWorkspace
-      brand="套件中心"
-      backgroundImage={backgroundImage}
-      theme="system"
-      useHostTheme={true}
-    />
+    <>
+      <div className="gpc-backdrop" aria-hidden="true">
+        <img src={backgroundImage} alt="" />
+        <span />
+      </div>
+      <PackagesWorkspace
+        brand="套件中心"
+        backgroundImage={backgroundImage}
+        theme="system"
+        useHostTheme={true}
+      />
+      <DoodleCrewFooter className="gpc-art-footer" />
+    </>
   </React.StrictMode>,
 );

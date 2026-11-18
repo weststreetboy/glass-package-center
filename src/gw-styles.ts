@@ -172,7 +172,7 @@ export const styles = `
   min-height: 100svh;
   overflow: hidden;
   padding: 38px 28px 32px;
-  background: var(--gw-background);
+  background: transparent;
   color: var(--gw-ink);
   font:
     14px/1.5 "Segoe UI",
