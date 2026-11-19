@@ -287,8 +287,8 @@ http://192.168.50.4:13801/dsm/synology-x86_64.json
 **方式一：页面上传（任何设备都能用）**
 
 1. 打开站点，点右上角 **上传**（或「全部套件」右侧的 **上传套件**）。
-2. 把 `.spk` 拖进虚线框，或点击选择文件；支持最大 512 MB。
-3. 点 **开始上传**。服务会解析 INFO 与 256px 图标，落盘到 `/data/packages/`，写入 `/data/registry.json`。
+2. 把 `.spk` 拖进虚线框，或点击选择文件；支持最大 2 GB。
+3. 点 **开始上传**。前端按 8 MB 分片发送，单片失败自动重试 3 次；全部到齐后服务端合并、解析 INFO 与 256px 图标，落盘到 `/data/packages/`，写入 `/data/registry.json`。
 4. 完成后页面列表、详情弹窗、以及 DSM 套件来源会**立刻**看到这个包，无需重启容器、无需重建镜像。
 
 上传的包会带「本地导入」标记；在详情弹窗底部可以「从套件中心移除」（同时删除文件）。内置套件不可移除。
@@ -314,7 +314,7 @@ http://192.168.50.4:13801/dsm/synology-x86_64.json
 | `GPC_DATA_DIR` | `/data` | 上传包与登记表的持久化目录，**必须挂卷** |
 | `GPC_IMPORT_DIRS` | `/import` | 自动扫描目录，冒号分隔（Windows 本地调试用分号） |
 | `GPC_SCAN_INTERVAL` | `30` | 扫描间隔秒数，`0` 关闭定时扫描 |
-| `GPC_MAX_UPLOAD_MB` | `512` | 单包上传上限 |
+| `GPC_MAX_UPLOAD_MB` | `2048` | 单包上传上限（页面自动分片，脚本直传也受此限制） |
 | `GPC_ADMIN_TOKEN` | 空 | 设置后，上传 / 删除 / 手动扫描需带上该令牌（页面会显示令牌输入框） |
 | `GPC_PUBLIC_URL` | 空（按请求头） | 清单里 `link`/`thumbnail` 的对外前缀，如 `http://192.168.50.4:13801`。**DSM 显示图标但点安装提示「下载失败」时，务必设为 DSM 实际可访问的地址** |
 
@@ -324,6 +324,14 @@ http://192.168.50.4:13801/dsm/synology-x86_64.json
 # 上传
 curl -X POST --data-binary @my-package.spk \
   'http://192.168.50.4:13801/api/upload?name=my-package.spk'
+
+# 大包分片上传（页面自动走这条链路；id 自定义，index 从 0 开始）
+curl -X POST --data-binary @part-0.bin \
+  'http://192.168.50.4:13801/api/upload/chunk?name=my-package.spk&id=up123&index=0&total=2'
+curl -X POST --data-binary @part-1.bin \
+  'http://192.168.50.4:13801/api/upload/chunk?name=my-package.spk&id=up123&index=1&total=2'
+curl -X POST \
+  'http://192.168.50.4:13801/api/upload/finish?name=my-package.spk&id=up123&total=2'
 
 # 查看当前列表
 curl http://192.168.50.4:13801/api/packages

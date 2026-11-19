@@ -38,8 +38,8 @@ services:
       GPC_IMPORT_DIRS: /import
       # 扫描间隔（秒），0 表示只在启动时扫一次
       GPC_SCAN_INTERVAL: "30"
-      # 单次上传体积上限（MB）
-      GPC_MAX_UPLOAD_MB: "512"
+      # 单包上传上限（MB）；页面按 8 MB 分片上传，大包不会卡在代理层
+      GPC_MAX_UPLOAD_MB: "2048"
       # 管理口令：设置后上传 / 删除 / 手动扫描都需带上它；留空则不校验
       GPC_ADMIN_TOKEN: ""
       # DSM 取包地址：清单里 link/thumbnail 的前缀。DSM 若能显示图标但点安装提示「下载失败」，

@@ -10,7 +10,12 @@ import {
   X,
 } from "lucide-react";
 
+const CHUNK_BYTES = 8 * 1024 * 1024;
+const MAX_BYTES = 2 * 1024 * 1024 * 1024;
+
 type UploadedPkg = { name?: string; v?: string; arch?: string[]; size?: string; origin?: string };
+type ChunkResult = { ok: boolean; error?: string };
+type FinishResult = ChunkResult & { status: number; package?: UploadedPkg };
 
 type Props = {
   open: boolean;
@@ -58,6 +63,11 @@ export default function PackageUpload({ open, onClose, onUploaded, tokenRequired
       setError("只支持 .spk 套件文件");
       return;
     }
+    if (f.size > MAX_BYTES) {
+      setFile(null);
+      setError(`文件 ${(f.size / 1024 / 1024 / 1024).toFixed(2)} GB 超过单包 2 GB 上限`);
+      return;
+    }
     setFile(f);
   };
 
@@ -67,47 +77,115 @@ export default function PackageUpload({ open, onClose, onUploaded, tokenRequired
     pick(e.dataTransfer.files?.[0] ?? null);
   };
 
-  const send = () => {
+  const send = async () => {
     if (!file || busy) return;
+    const current = file;
     setBusy(true);
     setError("");
     setProgress(0);
-    const q = new URLSearchParams({ name: file.name });
-    if (token) q.set("token", token);
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `api/upload?${q.toString()}`);
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
-    };
-    xhr.onload = () => {
-      setBusy(false);
-      let data: { ok?: boolean; error?: string; package?: UploadedPkg } | null = null;
-      try {
-        data = JSON.parse(xhr.responseText);
-      } catch {
-        data = null;
-      }
-      if (xhr.status >= 200 && xhr.status < 300 && data?.ok) {
-        // 令牌存下来，后续删除 / 上下线可直接复用
-        try {
-          if (token) window.localStorage.setItem("gpc_token", token);
-        } catch {
-          /* 隐私模式下写入会失败，忽略 */
+
+    const base = new URLSearchParams({ name: current.name });
+    if (token) base.set("token", token);
+    const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const total = Math.max(1, Math.ceil(current.size / CHUNK_BYTES));
+
+    const postChunk = (index: number, blob: Blob) =>
+      new Promise<ChunkResult>((resolve) => {
+        const q = new URLSearchParams(base);
+        q.set("id", uploadId);
+        q.set("index", String(index));
+        q.set("total", String(total));
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", `api/upload/chunk?${q.toString()}`);
+        xhr.upload.onprogress = (e) => {
+          if (!e.lengthComputable) return;
+          const pct = ((index + e.loaded / e.total) / total) * 100;
+          setProgress(Math.min(99, Math.round(pct)));
+        };
+        xhr.onload = () => {
+          let data: ChunkResult | null = null;
+          try {
+            data = JSON.parse(xhr.responseText);
+          } catch {
+            data = null;
+          }
+          resolve(
+            xhr.status >= 200 && xhr.status < 300 && data?.ok
+              ? { ok: true }
+              : { ok: false, error: data?.error || `HTTP ${xhr.status}` },
+          );
+        };
+        xhr.onerror = () => resolve({ ok: false, error: "网络连接中断" });
+        xhr.ontimeout = () => resolve({ ok: false, error: "请求超时" });
+        xhr.send(blob);
+      });
+
+    try {
+      for (let i = 0; i < total; i++) {
+        const start = i * CHUNK_BYTES;
+        const end = Math.min(start + CHUNK_BYTES, current.size);
+        let lastError = "";
+        let uploaded = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const result = await postChunk(i, current.slice(start, end));
+          if (result.ok) {
+            uploaded = true;
+            break;
+          }
+          lastError = result.error || "上传失败";
+          if (attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
+          }
         }
-        setDone(data.package ?? { name: file.name });
-        setProgress(100);
-        setFile(null);
-        if (inputRef.current) inputRef.current.value = "";
-        onUploaded(`已上传 ${data.package?.name || file.name}`);
-      } else {
-        setError(data?.error || `上传失败（HTTP ${xhr.status}）`);
+        if (!uploaded) {
+          throw new Error(`第 ${i + 1}/${total} 片上传失败：${lastError}`);
+        }
+        setProgress(Math.round(((i + 1) / total) * 100));
       }
-    };
-    xhr.onerror = () => {
+
+      const q = new URLSearchParams(base);
+      q.set("id", uploadId);
+      q.set("total", String(total));
+      const finish = await new Promise<FinishResult>((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", `api/upload/finish?${q.toString()}`);
+        xhr.onload = () => {
+          let data: FinishResult | null = null;
+          try {
+            data = JSON.parse(xhr.responseText);
+          } catch {
+            data = null;
+          }
+          resolve({
+            ok: xhr.status >= 200 && xhr.status < 300 && Boolean(data?.ok),
+            status: xhr.status,
+            error: data?.error,
+            package: data?.package,
+          });
+        };
+        xhr.onerror = () => resolve({ ok: false, status: 0, error: "网络连接中断" });
+        xhr.send();
+      });
+      if (!finish.ok) {
+        throw new Error(finish.error || `合并失败（HTTP ${finish.status}）`);
+      }
+
+      try {
+        if (token) window.localStorage.setItem("gpc_token", token);
+      } catch {
+        /* 隐私模式下写入会失败，忽略 */
+      }
+      setDone(finish.package ?? { name: current.name });
+      setProgress(100);
+      setFile(null);
+      if (inputRef.current) inputRef.current.value = "";
+      onUploaded(`已上传 ${finish.package?.name || current.name}`);
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : String(exc));
+      setProgress(0);
+    } finally {
       setBusy(false);
-      setError("网络中断，上传没有完成");
-    };
-    xhr.send(file);
+    }
   };
 
   const close = () => {
@@ -170,7 +248,7 @@ export default function PackageUpload({ open, onClose, onUploaded, tokenRequired
             <>
               <span className="pc-up-icon"><UploadCloud size={22} aria-hidden="true" /></span>
               <strong>拖拽 .spk 到这里，或点击选择文件</strong>
-              <span>支持单包最大 512 MB，上传后自动解析名称、版本与架构</span>
+              <span>支持单包最大 2 GB · 自动分片上传，断网可重试</span>
             </>
           )}
         </div>

@@ -19,7 +19,7 @@
     GPC_DATA_DIR        持久化目录，默认 /data
     GPC_IMPORT_DIRS     自动扫描目录，冒号分隔，默认 /import
     GPC_SCAN_INTERVAL   扫描间隔秒数，默认 30；设为 0 关闭定时扫描
-    GPC_MAX_UPLOAD_MB   单包上传上限，默认 512
+    GPC_MAX_UPLOAD_MB   单包上传上限，默认 2048；前端按 8 MB 分片上传
     GPC_ADMIN_TOKEN     设置后，上传/删除/扫描需要携带该令牌
     GPC_PUBLIC_URL      清单里 link/thumbnail 的对外地址，如 http://192.168.50.4:13801
                         DSM 下载失败但图标正常时，设为 DSM 实际可访问的地址即可
@@ -33,6 +33,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import tarfile
 import threading
@@ -56,7 +57,9 @@ PORT = int(os.environ.get("GPC_PORT") or 80)
 # 配置后（如 http://192.168.50.4:13801）清单地址固定，避免下载失败。
 PUBLIC_URL = (os.environ.get("GPC_PUBLIC_URL") or "").strip()
 ADMIN_TOKEN = (os.environ.get("GPC_ADMIN_TOKEN") or "").strip()
-MAX_UPLOAD_BYTES = int(float(os.environ.get("GPC_MAX_UPLOAD_MB") or 512) * 1024 * 1024)
+MAX_UPLOAD_BYTES = int(float(os.environ.get("GPC_MAX_UPLOAD_MB") or 2048) * 1024 * 1024)
+CHUNK_BYTES = 8 * 1024 * 1024
+UPLOAD_TMP_ROOT = os.path.join(DATA_DIR, ".uploads")
 SCAN_INTERVAL = int(os.environ.get("GPC_SCAN_INTERVAL") or 30)
 IMPORT_DIRS = [
     p.strip()
@@ -559,6 +562,10 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _error(self, status: int, message: str) -> None:
+        # 413 时请求体尚未读完，保持 keep-alive 会让浏览器把响应当成连接中断，
+        # 明明服务端已返回「超过上限」却只显示「网络中断」。明确关闭连接。
+        if status == 413:
+            self.close_connection = True
         self._json({"ok": False, "error": message}, status)
 
     def _origin(self) -> str:
@@ -683,6 +690,8 @@ class Handler(BaseHTTPRequestHandler):
                         "scan": bool(IMPORT_DIRS),
                         "scanDirs": IMPORT_DIRS,
                         "tokenRequired": bool(ADMIN_TOKEN),
+                        "maxUploadMB": MAX_UPLOAD_BYTES // (1024 * 1024),
+                        "chunkSizeMB": CHUNK_BYTES // (1024 * 1024),
                     },
                 }
             )
@@ -764,6 +773,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/upload":
             self._handle_upload(query)
             return
+        if path == "/api/upload/chunk":
+            self._handle_upload_chunk(query)
+            return
+        if path == "/api/upload/finish":
+            self._finish_upload(query)
+            return
         if path == "/api/scan":
             if not self._authorized():
                 self._error(403, "令牌无效")
@@ -816,6 +831,134 @@ class Handler(BaseHTTPRequestHandler):
             self._error(404, "只能删除本地上传或扫描到的套件")
 
     # ---- 上传 ----
+    @staticmethod
+    def _upload_params(query: dict) -> tuple[str, str]:
+        raw_name = (query.get("name") or [""])[0]
+        name = os.path.basename(raw_name.replace("\\", "/")).strip()
+        if not name.lower().endswith(".spk"):
+            raise ValueError("只接受 .spk 文件")
+        name = re.sub(r"[^0-9A-Za-z._\-\u4e00-\u9fa5]", "_", name)
+        upload_id = (query.get("id") or [""])[0].strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", upload_id):
+            raise ValueError("上传会话标识无效")
+        return name, upload_id
+
+    def _read_chunk_body(self) -> bytes:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0:
+            raise ValueError("缺少 Content-Length")
+        if length > CHUNK_BYTES + 1024 * 1024:
+            raise ValueError("分片体积超过 8 MB")
+        raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise IOError("上传被中断")
+        return raw
+
+    def _handle_upload_chunk(self, query: dict) -> None:
+        """接收 8 MB 分片；全部到齐后由 /api/upload/finish 合并登记。"""
+        if not self._authorized():
+            self._error(403, "令牌无效")
+            return
+        try:
+            name, upload_id = self._upload_params(query)
+            index = int((query.get("index") or [""])[0])
+            total = int((query.get("total") or [""])[0])
+            if index < 0 or total < 1 or index >= total or total > 4096:
+                raise ValueError("分片序号无效")
+            raw = self._read_chunk_body()
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._error(500, f"接收分片失败：{exc}")
+            return
+
+        part_dir = os.path.join(UPLOAD_TMP_ROOT, upload_id)
+        try:
+            os.makedirs(part_dir, exist_ok=True)
+            with open(os.path.join(part_dir, f"{index:05d}.part"), "wb") as fh:
+                fh.write(raw)
+        except OSError as exc:
+            self._error(500, f"写入分片失败：{exc}")
+            return
+        log("上传分片", name, f"{index + 1}/{total}", len(raw))
+        self._json({"ok": True, "index": index, "received": len(raw)})
+
+    def _finish_upload(self, query: dict) -> None:
+        """校验并合并全部分片，复用直传的登记与同名冲突处理逻辑。"""
+        if not self._authorized():
+            self._error(403, "令牌无效")
+            return
+        try:
+            name, upload_id = self._upload_params(query)
+            total = int((query.get("total") or [""])[0])
+            if total < 1 or total > 4096:
+                raise ValueError("分片总数无效")
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+
+        part_dir = os.path.join(UPLOAD_TMP_ROOT, upload_id)
+        parts = [os.path.join(part_dir, f"{i:05d}.part") for i in range(total)]
+        missing = [i + 1 for i, p in enumerate(parts) if not os.path.isfile(p)]
+        if missing:
+            self._error(400, f"缺少分片：{', '.join(map(str, missing[:10]))}")
+            return
+        total_size = sum(os.path.getsize(p) for p in parts)
+        if total_size <= 0:
+            self._error(400, "上传内容为空")
+            return
+        if total_size > MAX_UPLOAD_BYTES:
+            self._error(413, f"超过单包上限 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+            shutil.rmtree(part_dir, ignore_errors=True)
+            return
+
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        merged = os.path.join(UPLOAD_DIR, f".upload-{upload_id}.part")
+        try:
+            with open(merged, "wb") as out:
+                for part in parts:
+                    with open(part, "rb") as fh:
+                        shutil.copyfileobj(fh, out, 1 << 20)
+
+            target = os.path.join(UPLOAD_DIR, name)
+            if os.path.isfile(target) and md5_file(target) != md5_file(merged):
+                stem, ext = os.path.splitext(name)
+                n = 2
+                while os.path.isfile(os.path.join(UPLOAD_DIR, f"{stem}-{n}{ext}")):
+                    n += 1
+                name = f"{stem}-{n}{ext}"
+                target = os.path.join(UPLOAD_DIR, name)
+
+            os.replace(merged, target)
+            entry = build_entry(target, name, "upload")
+            register(entry)
+            log("上传收录（分片）", name, entry["v"], entry["size"], f"共 {total} 片")
+            package_out = {k: v for k, v in entry.items() if k != "path"}
+        except ValueError as exc:
+            self._safe_remove(merged)
+            self._error(400, str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._safe_remove(merged)
+            log("分片合并失败", exc)
+            self._error(500, f"上传失败：{exc}")
+            return
+        finally:
+            # Windows 上刚关闭的分片文件可能被短暂锁定，重试几次再放弃
+            for attempt in range(5):
+                shutil.rmtree(part_dir, ignore_errors=True)
+                if not os.path.exists(part_dir):
+                    break
+                time.sleep(0.1 * (attempt + 1))
+            if os.path.exists(part_dir):
+                log("警告：临时分片目录未能删除", part_dir)
+        # 清理完成后再回包，避免客户端收到成功却看到临时文件仍在
+        self._json({"ok": True, "package": package_out})
+
     def _handle_upload(self, query: dict) -> None:
         if not self._authorized():
             self._error(403, "令牌无效")
@@ -834,6 +977,17 @@ class Handler(BaseHTTPRequestHandler):
             self._error(411, "缺少 Content-Length")
             return
         if length > MAX_UPLOAD_BYTES:
+            # 先把请求体排空再回 413：服务端若在客户端仍在发送时关闭连接，
+            # TCP RST 会让浏览器/脚本只看到「网络中断」，读不到明确的超限提示。
+            remaining = length
+            try:
+                while remaining > 0:
+                    block = self.rfile.read(min(262144, remaining))
+                    if not block:
+                        break
+                    remaining -= len(block)
+            except Exception:  # noqa: BLE001
+                pass
             self._error(413, f"超过单包上限 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
             return
 
@@ -890,6 +1044,13 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(UPLOAD_DIR, exist_ok=True)
+    # 清理超过 24 小时的未完成分片会话
+    if os.path.isdir(UPLOAD_TMP_ROOT):
+        now = time.time()
+        for item in os.listdir(UPLOAD_TMP_ROOT):
+            stale_part = os.path.join(UPLOAD_TMP_ROOT, item)
+            if os.path.isdir(stale_part) and now - os.path.getmtime(stale_part) > 86400:
+                shutil.rmtree(stale_part, ignore_errors=True)
 
     with _lock:
         _state["builtin"] = load_catalog()
