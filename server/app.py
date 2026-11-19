@@ -91,6 +91,7 @@ _state: dict = {"builtin": [], "runtime": {}, "offline": set(), "ready": False}
 _md5_cache: dict = {}
 _sha256_cache: dict = {}
 _icon_cache: dict = {}
+_info_cache: dict = {}
 
 
 # --------------------------------------------------------------------------- #
@@ -267,6 +268,35 @@ def spk_icon_bytes(entry: dict) -> bytes | None:
     return blob
 
 
+def spk_info(path: str) -> dict:
+    """按 path+size+mtime 缓存 SPK 的 INFO，供清单补发布者/版本用。
+
+    老登记表里没有 maintainer 字段，DSM 详情页就会显示全局写死的维护者；
+    这里按需回读一次 INFO，之后走缓存，避免每次刷新清单都解 tar。
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    key = (path, st.st_size, int(st.st_mtime))
+    if key in _info_cache:
+        return _info_cache[key]
+    info, _ = read_spk_meta(path)
+    _info_cache[key] = info or {}
+    if len(_info_cache) > 256:
+        _info_cache.clear()
+    return _info_cache[key]
+
+
+def guess_version(file_name: str) -> str:
+    """从文件名兜底猜版本号：xxx_2.0.3-0016.spk → 2.0.3-0016。"""
+    stem = file_name[:-4] if file_name.lower().endswith(".spk") else file_name
+    for part in reversed(stem.split("_")):
+        if re.fullmatch(r"\d+\.\d+[0-9A-Za-z.\-]*", part):
+            return part
+    return ""
+
+
 def build_entry(path: str, file_name: str, origin: str) -> dict:
     info, icon = read_spk_meta(path)
     if info is None:
@@ -293,6 +323,14 @@ def build_entry(path: str, file_name: str, origin: str) -> dict:
         "sizeBytes": size,
         "icon": icon,
         "official": str(info.get("maintainer", "")).lower().startswith("synology"),
+        # 真实发布者来自 SPK 的 INFO：第三方包不能统一挂成我们自己
+        "maintainer": (info.get("maintainer") or "").strip(),
+        "maintainerUrl": (info.get("maintainer_url") or "").strip(),
+        # 「发布人员」是详情页另一行，DSM 取 distributor
+        "distributor": (info.get("distributor") or "").strip(),
+        "distributorUrl": (info.get("distributor_url") or "").strip(),
+        "deps": (info.get("dependencies") or "").strip(),
+        "changelog": (info.get("changelog") or "").strip(),
         "real": True,
         "origin": origin,
         "path": path,
@@ -542,31 +580,51 @@ def dsm_payload(arch: str, origin: str, download_origin: str = "") -> dict:
         # 参考可用源 release.66666.host 的做法：/packages/<sha256>/<文件名>.spk
         fingerprint = _sha256_file(path) or md5_file(path)
         file_name = os.path.basename(e["file"])
-        icon = f"{origin}/api/icon/{urllib.parse.quote(file_name)}?size=256"
-        items.append(
-            {
-                "package": e.get("en") or e.get("id"),
-                "version": e.get("v") or "1.0.0",
-                "dname": e.get("name") or e.get("en"),
-                "desc": e.get("desc") or "",
-                "download_count": 2026,
-                "recent_download_count": 0,
-                "link": f"{dl}/packages/{fingerprint}/{urllib.parse.quote(file_name)}",
-                "size": os.path.getsize(path),
-                "md5": md5_file(path),
-                # DSM 只认 thumbnail 里的 URL：留空会让套件中心列表显示默认占位图标
-                "thumbnail": [icon, icon],
-                "thumbnail_retina": [icon, icon],
-                "snapshot": [],
-                # 与参考源保持一致：不做静默安装/启动，避免 DSM 走自动化分支
-                "qinst": False,
-                "qstart": False,
-                "qupgrade": True,
-                "startable": "yes",
-                "maintainer": MAINTAINER,
-                "maintainer_url": MAINTAINER_URL,
-            }
-        )
+        quoted_name = urllib.parse.quote(file_name)
+        icon_base = f"{origin}/api/icon/{quoted_name}"
+        # 老登记表可能缺这些字段：回读一次 SPK 的 INFO 补齐，
+        # 否则 DSM 详情页的「开发者 / 发布人员 / 最新在线版本」会是写死的值或空白。
+        info = {} if (e.get("maintainer") and e.get("v") and e.get("name")) else spk_info(path)
+        version = (e.get("v") or info.get("version") or guess_version(file_name) or "1.0.0").strip()
+        dname = (e.get("name") or info.get("displayname") or e.get("en") or e.get("id") or file_name).strip()
+        maint = (e.get("maintainer") or info.get("maintainer") or MAINTAINER).strip()
+        murl = (e.get("maintainerUrl") or info.get("maintainer_url") or MAINTAINER_URL).strip()
+        # 发布人员：DSM 详情页单独一行，取自 SPK 的 distributor；缺省回落到维护者
+        dist = (e.get("distributor") or info.get("distributor") or maint).strip()
+        durl = (e.get("distributorUrl") or info.get("distributor_url") or murl).strip()
+        deps = (e.get("deps") or info.get("dependencies") or "").strip()
+        changelog = (e.get("changelog") or info.get("changelog") or e.get("long") or e.get("desc") or "").strip()
+        item = {
+            "package": e.get("en") or e.get("id"),
+            "version": version,
+            "dname": dname,
+            "desc": e.get("desc") or info.get("description") or "",
+            "download_count": 2026,
+            "recent_download_count": 0,
+            "link": f"{dl}/packages/{fingerprint}/{quoted_name}",
+            "size": os.path.getsize(path),
+            "md5": md5_file(path),
+            # DSM 只认 thumbnail 里的 URL：留空会让套件中心列表显示默认占位图标。
+            # 顺序与 SynoCommunity 一致：[0]=72px 列表用，[1]=256px，retina 再给 256。
+            "thumbnail": [f"{icon_base}?size=72", f"{icon_base}?size=256"],
+            "thumbnail_retina": [f"{icon_base}?size=256", f"{icon_base}?size=256"],
+            "snapshot": [],
+            # 与参考源保持一致：不做静默安装/启动，避免 DSM 走自动化分支
+            "qinst": False,
+            "qstart": False,
+            "qupgrade": True,
+            "startable": "yes",
+            "maintainer": maint,
+            "maintainer_url": murl,
+            "distributor": dist,
+            "distributor_url": durl,
+            "changelog": changelog,
+        }
+        # 空值不写进清单，否则详情页会多出空的「从属套件 / 冲突套件」行
+        if deps:
+            item["deppkgs"] = deps
+            item["conflictpkgs"] = ""
+        items.append(item)
     return {"packages": items}
 
 
