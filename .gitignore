@@ -11,3 +11,10 @@ Thumbs.db
 *.log
 .idea/
 .vscode/
+
+# 运行时上传的安装包与登记表
+data/
+
+# Python
+__pycache__/
+*.pyc

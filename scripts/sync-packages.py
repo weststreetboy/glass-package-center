@@ -240,7 +240,7 @@ def main():
     source = {"url": SOURCE_URL, "note": SOURCE_NOTE}
     lines = [
         "// 由 scripts/sync-packages.py 自动生成，请勿手改。",
-        "export type Pkg = { id:string; name:string; en:string; cat:string; v:string; desc:string; long:string; arch:string[]; dsm:string; ch:string; file:string; size:string; sizeBytes:number; icon:string; official:boolean; real:boolean };",
+        "export type Pkg = { id:string; name:string; en:string; cat:string; v:string; desc:string; long:string; arch:string[]; dsm:string; ch:string; file:string; size:string; sizeBytes:number; icon:string; official:boolean; real:boolean; origin?:string };",
         "export const PACKAGES: Pkg[] = [",
     ]
     for p in pkgs:
@@ -250,6 +250,14 @@ def main():
     with open(DATA_TS, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
     print(f"\n[ok] 生成 {DATA_TS}  套件数={len(pkgs)}")
+
+    # 同步输出运行时目录：容器内的 server/app.py 以它为「内置套件」基线，
+    # 运行时上传/扫描到的 SPK 再叠加在这份基线之上。
+    catalog_path = os.path.join(ROOT, "webroot", "catalog.json")
+    with open(catalog_path, "w", encoding="utf-8") as fh:
+        json.dump({"packages": pkgs, "source": source}, fh, ensure_ascii=False)
+        fh.write("\n")
+    print(f"[ok] 生成 {catalog_path}  套件数={len(pkgs)}")
 
     # 同步生成 DSM 套件中心协议清单（webroot/dsm/*.json）
     # 这样套件增删后，DSM 来源看到的安装包列表会一起更新。

@@ -9,7 +9,9 @@ import {
   FolderOpen,
   Hammer,
   Image as ImageIcon,
+  Loader2,
   Trash2,
+  UploadCloud,
 } from "lucide-react";
 import {
   buildSpk,
@@ -69,6 +71,9 @@ export default function SpkStudio() {
   const [result, setResult] = useState<Built | null>(null);
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
+  const [publishing, setPublishing] = useState(false);
+  const [publishMsg, setPublishMsg] = useState("");
+  const [publishErr, setPublishErr] = useState("");
   const [history, setHistory] = useState<HistoryItem[]>(() => {
     try {
       return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]") as HistoryItem[];
@@ -142,6 +147,28 @@ export default function SpkStudio() {
       setError(String(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function publish() {
+    if (!result || publishing) return;
+    setPublishing(true);
+    setPublishMsg("");
+    setPublishErr("");
+    try {
+      const q = new URLSearchParams({ name: result.filename });
+      const res = await fetch(`api/upload?${q.toString()}`, { method: "POST", body: result.blob });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.ok) {
+        setPublishMsg(`已加入套件中心：${data?.package?.name || result.filename}`);
+        window.dispatchEvent(new Event("gpc:packages-updated"));
+      } else {
+        setPublishErr(data?.error || `上传失败（HTTP ${res.status}）`);
+      }
+    } catch {
+      setPublishErr("当前没有可用的上传服务，请用「下载 .spk」后在套装中心页面上传");
+    } finally {
+      setPublishing(false);
     }
   }
 
@@ -316,13 +343,21 @@ export default function SpkStudio() {
                   <div><dt>MD5</dt><dd className="sp-mono">{result.checksum}</dd></div>
                   <div><dt>大小</dt><dd>{fmt(result.spkBytes)}（package.tgz {fmt(result.tgzBytes)}）</dd></div>
                 </dl>
-                <a className="sp-primary sp-download" href={url} download={result.filename}>
-                  <Download size={15} />下载 .spk
-                </a>
+                <div className="sp-actions">
+                  <a className="sp-primary sp-download" href={url} download={result.filename}>
+                    <Download size={15} />下载 .spk
+                  </a>
+                  <button type="button" className="sp-primary sp-publish" disabled={publishing} onClick={publish}>
+                    {publishing ? <Loader2 size={15} className="pc-spin" /> : <UploadCloud size={15} />}
+                    {publishing ? "上传中…" : "上传到套件中心"}
+                  </button>
+                </div>
+                {publishMsg && <p className="sp-publish-msg is-ok"><Check size={14} />{publishMsg}</p>}
+                {publishErr && <p className="sp-publish-msg is-err"><AlertCircle size={14} />{publishErr}</p>}
               </div>
             )}
             <p className="sp-note">
-              全部在浏览器本地完成，文件不会上传。产物结构与 SPK Studio 的 Python 版一致。
+              打包全程在浏览器本地完成；点「上传到套件中心」才会把产物写入容器，之后页面与 DSM 来源立即可见。
             </p>
           </section>
 
@@ -382,6 +417,12 @@ const css = `
 .sp-primary{display:inline-flex;align-items:center;justify-content:center;gap:7px;width:100%;padding:11px 14px;border:0;border-radius:11px;background:var(--gw-accent,#0066cc);color:#fff;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none}
 .sp-primary:disabled{opacity:.55;cursor:default}
 .sp-download{background:rgba(0,102,204,.13);color:var(--gw-accent,#0066cc)}
+.sp-actions{display:flex;flex-direction:column;gap:8px}
+.sp-publish{background:var(--gw-accent,#0066cc)}
+.sp-publish-msg{display:flex;align-items:center;gap:6px;font-size:11px;margin:2px 0 0;padding:8px 10px;border-radius:9px}
+.sp-publish-msg svg{flex:none}
+.sp-publish-msg.is-ok{background:rgba(40,160,90,.12);color:#18814a}
+.sp-publish-msg.is-err{background:rgba(220,60,60,.1);color:#c62f2f}
 .sp-error,.sp-okline{display:flex;align-items:center;gap:7px;font-size:11px;padding:9px 10px;border-radius:9px}
 .sp-error{background:rgba(220,60,60,.1);color:#c62f2f}
 .sp-okline{background:rgba(40,160,90,.12);color:#18814a}

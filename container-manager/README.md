@@ -32,18 +32,20 @@ http://<群晖IP>:8380/?source=https%3A%2F%2Fpkg.example.com%2Fsspks%2F
 
 参数值需 URL 编码。来源页有「重置」按钮可恢复默认演示地址。详见仓库根目录 README 的 4.2 节。
 
-**换页面 / 换 SPK 但不重建镜像**：取消文件末尾 `volumes` 段的注释，并在同目录建立：
+**上传 / 自动同步套件（推荐）**：不用改镜像。页面右上角「上传」直接拖 `.spk` 即可；或者在 `volumes` 里把打包目录挂到 `/import`：
 
+```yaml
+    volumes:
+      - ./data:/data
+      - /volume1/docker/spk-studio/builds:/import:ro
 ```
-/volume1/docker/gpc/
-├── docker-compose.yml
-└── webroot/
-    ├── index.html
-    └── packages/*.spk
-```
+
+`/data` 必须挂载，否则上传的包在容器重建后丢失。详见仓库根目录 README 的 4.5 节。
+
+**换页面但仍不重建镜像**：在 `volumes` 里挂 `- ./webroot:/app/webroot:ro`，同目录建立 `webroot/index.html` 即可。
 
 ## 说明
 
 - 容器名：`glass-package-center`，异常退出自动重启。
-- 站点根目录：`/usr/share/nginx/html/`，SPK 下载目录：`/usr/share/nginx/html/packages/`。
+- 站点根目录：`/app/webroot/`，上传的安装包：`/data/packages/`，登记表：`/data/registry.json`。
 - 完整说明（Web Station、自建镜像、数据修改、FAQ）见仓库根目录 `README.md`。

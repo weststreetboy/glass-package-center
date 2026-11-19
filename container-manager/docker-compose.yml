@@ -19,9 +19,14 @@ services:
       - "8380:80"
     environment:
       - TZ=Asia/Shanghai
+      # 自动扫描间隔（秒）。0 表示只在启动时扫描一次
+      - GPC_SCAN_INTERVAL=30
+      # 可选：设置后上传 / 删除 / 手动扫描都要带令牌
+      # - GPC_ADMIN_TOKEN=换成你自己的口令
 
-    # 可选：不改镜像直接热替换页面 / SPK 包。
-    # 取消注释后，在本文件同级建立 webroot/index.html 与 webroot/packages/ 即可。
-    # volumes:
-    #   - ./webroot/index.html:/usr/share/nginx/html/index.html:ro
-    #   - ./webroot/packages:/usr/share/nginx/html/packages:ro
+    volumes:
+      # 上传的安装包与登记表，必须持久化，否则重建容器会丢
+      - ./data:/data
+      # 可选：把 SPK 打包目录只读挂进来，新打的 .spk 会自动出现在套件中心，
+      #       DSM 套件来源里也能直接看到。按实际路径修改左侧。
+      # - /volume1/docker/spk-studio/builds:/import:ro

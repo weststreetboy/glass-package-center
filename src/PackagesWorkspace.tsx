@@ -30,6 +30,8 @@ import {
   Settings2,
   ShieldCheck,
   Sun,
+  Trash2,
+  Upload,
   X,
   Boxes,
   Info,
@@ -39,6 +41,7 @@ import {
 import { styles } from "./gw-styles";
 import { PACKAGES, SOURCE, type Pkg } from "./packages.data";
 import SpkStudio from "./SpkStudio";
+import PackageUpload from "./PackageUpload";
 
 gsap.registerPlugin(useGSAP);
 
@@ -220,6 +223,54 @@ export default function PackagesWorkspace({
   const [source, setSource] = useState<SourceCfg>(readSource);
   const [editingSource, setEditingSource] = useState(false);
   const [sourceDraft, setSourceDraft] = useState("");
+  // 运行时列表：容器内的服务返回内置 + 上传 + 扫描到的套件；静态打开时回落到内置数据
+  const [pkgs, setPkgs] = useState<Pkg[]>(PACKAGES);
+  const [serverMode, setServerMode] = useState(false);
+  const [tokenRequired, setTokenRequired] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
+
+  const loadPackages = async () => {
+    try {
+      const res = await fetch("api/packages", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data?.packages) && data.packages.length) {
+        setPkgs(data.packages as Pkg[]);
+        setServerMode(true);
+        setTokenRequired(Boolean(data?.capabilities?.tokenRequired));
+      }
+    } catch {
+      // 以 file:// 或静态托管打开时没有接口，继续用内置数据
+    }
+  };
+
+  useEffect(() => {
+    void loadPackages();
+  }, []);
+
+  // SPK 工作室上传成功后通知列表刷新
+  useEffect(() => {
+    const refresh = () => void loadPackages();
+    window.addEventListener("gpc:packages-updated", refresh);
+    return () => window.removeEventListener("gpc:packages-updated", refresh);
+  }, []);
+
+  const removePackage = async (p: Pkg) => {
+    if (!window.confirm(`从套件中心移除「${p.name}」？安装包文件也会一并删除。`)) return;
+    try {
+      const res = await fetch(`api/packages/${encodeURIComponent(p.file)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.ok) {
+        setSelected(null);
+        setNotice(`已移除 ${p.name}`);
+        void loadPackages();
+      } else {
+        setNotice(data?.error || "移除失败");
+      }
+    } catch {
+      setNotice("移除失败：无法连接服务");
+    }
+  };
 
   useEffect(
     () => setMaterial(normalize(defaults)),
@@ -243,18 +294,18 @@ export default function PackagesWorkspace({
       ? `${(n / 1024 / 1024).toFixed(1)} MB`
       : `${Math.max(1, Math.round(n / 1024))} KB`;
 
-  const totalBytes = PACKAGES.reduce((s, p) => s + p.sizeBytes, 0);
+  const totalBytes = pkgs.reduce((s, p) => s + p.sizeBytes, 0);
   const archCounts = ARCHS.map((a) => ({
     arch: a,
-    count: PACKAGES.filter((p) => p.arch.includes(a)).length,
+    count: pkgs.filter((p) => p.arch.includes(a)).length,
   }));
   const catCounts = CATS.slice(1)
-    .map((c) => ({ cat: c, count: PACKAGES.filter((p) => p.cat === c).length }))
+    .map((c) => ({ cat: c, count: pkgs.filter((p) => p.cat === c).length }))
     .filter((x) => x.count > 0);
 
   const visible = useMemo(
     () =>
-      PACKAGES.filter((p) => {
+      pkgs.filter((p) => {
         const hay = `${p.name} ${p.en} ${p.desc} ${p.cat} ${p.arch.join(" ")}`.toLowerCase();
         if (filter && !hay.includes(filter.toLowerCase())) return false;
         if (cat !== "全部" && p.cat !== cat) return false;
@@ -262,7 +313,7 @@ export default function PackagesWorkspace({
         if (channel !== "全部" && p.ch !== channel) return false;
         return true;
       }),
-    [filter, cat, arch, channel],
+    [filter, cat, arch, channel, pkgs],
   );
 
   useGSAP(
@@ -441,6 +492,7 @@ export default function PackagesWorkspace({
           <span className="pc-tag pc-tag-arch" key={a}><ArchIcon arch={a} />{a}</span>
         ))}
         <span className="pc-tag">DSM {p.dsm}+</span>
+        {p.origin && p.origin !== "builtin" && <span className="pc-tag pc-tag-local">本地导入</span>}
       </div>
       <div className="pc-card-foot">
         <span className="pc-size"><HardDrive size={13} aria-hidden="true" />{p.size}</span>
@@ -498,6 +550,22 @@ export default function PackagesWorkspace({
             <span className="gw-personal">群晖 DSM 7 · 自建套件源</span>
           </a>
           <div className="gw-toolbar">
+            <button
+              type="button"
+              className="gw-adjust"
+              onClick={() => {
+                if (serverMode) {
+                  setUploadOpen(true);
+                  setAlerts(false);
+                  setSettingsOpen(false);
+                } else {
+                  setNotice("当前是静态页面，上传需在容器中运行服务");
+                }
+              }}
+            >
+              <Upload size={16} aria-hidden="true" />
+              <span>上传</span>
+            </button>
             <button
               type="button"
               className="gw-adjust"
@@ -562,7 +630,7 @@ export default function PackagesWorkspace({
               <div className="gw-heading-action">
                 <span className="gw-date">
                   <CircleCheck size={14} aria-hidden="true" />
-                  {PACKAGES.length} 个套件 · {fmtBytes(totalBytes)}
+                  {pkgs.length} 个套件 · {fmtBytes(totalBytes)}
                 </span>
               </div>
             </div>
@@ -577,10 +645,10 @@ export default function PackagesWorkspace({
                         <span>套件总数</span>
                         <Package size={17} aria-hidden="true" />
                       </div>
-                      <strong className="gw-balance-value">{PACKAGES.length}</strong>
+                      <strong className="gw-balance-value">{pkgs.length}</strong>
                       <p className="gw-balance-meta">
-                        <span className="gw-positive gw-badge">{PACKAGES.filter((p) => p.ch === "stable").length} 稳定版</span>
-                        {PACKAGES.filter((p) => p.ch !== "stable").length} 测试版
+                        <span className="gw-positive gw-badge">{pkgs.filter((p) => p.ch === "stable").length} 稳定版</span>
+                        {pkgs.filter((p) => p.ch !== "stable").length} 测试版
                       </p>
                       <div className="gw-account">
                         <span className="gw-account-icon"><HardDrive size={19} aria-hidden="true" /></span>
@@ -603,7 +671,7 @@ export default function PackagesWorkspace({
                           <div className="pc-arch-row" key={a.arch}>
                             <span className="pc-arch-name"><ArchIcon arch={a.arch} />{a.arch}</span>
                             <span className="gw-category-track pc-arch-track">
-                              <i style={{ width: `${PACKAGES.length ? (a.count / PACKAGES.length) * 100 : 0}%` }} />
+                              <i style={{ width: `${pkgs.length ? (a.count / pkgs.length) * 100 : 0}%` }} />
                             </span>
                             <strong>{a.count}</strong>
                           </div>
@@ -622,6 +690,13 @@ export default function PackagesWorkspace({
                       <h2>全部套件</h2>
                       <span>共 {visible.length} 个结果</span>
                     </div>
+                    <button
+                      type="button"
+                      className="gw-button pc-up-open"
+                      onClick={() => (serverMode ? setUploadOpen(true) : setNotice("当前是静态页面，上传需在容器中运行服务"))}
+                    >
+                      <Upload size={13} aria-hidden="true" />上传套件
+                    </button>
                   </div>
                   <div className="pc-filters gw-reveal">
                     <label className="gw-search pc-search">
@@ -664,7 +739,7 @@ export default function PackagesWorkspace({
               {view === "installed" && (
                 <section className="gw-panel gw-reveal">
                   <div className="gw-panel-title">
-                    <h2>已收录 <span className="gw-count">{PACKAGES.length}</span></h2>
+                    <h2>已收录 <span className="gw-count">{pkgs.length}</span></h2>
                     <div className="gw-segment" role="group" aria-label="渠道筛选">
                       {["全部", "stable", "beta"].map((c) => (
                         <button key={c} type="button" aria-pressed={channel === c} onClick={() => setChannel(c)}>
@@ -682,6 +757,7 @@ export default function PackagesWorkspace({
                           <span>{p.cat} · {p.dsm}+</span>
                         </div>
                         <span className="pc-tag pc-tag-arch">{p.arch.join(" · ")}</span>
+                        {p.origin && p.origin !== "builtin" && <span className="pc-tag pc-tag-local">本地</span>}
                         <span className="pc-list-size">{p.size}</span>
                         <button type="button" className="gw-button" onClick={() => download(p)}>
                           <Download size={13} aria-hidden="true" />下载
@@ -778,7 +854,7 @@ export default function PackagesWorkspace({
                 <>
                   <div className="gw-report-stats gw-reveal">
                     {[
-                      { label: "套件总数", value: PACKAGES.length, icon: Package },
+                      { label: "套件总数", value: pkgs.length, icon: Package },
                       { label: "架构类型", value: ARCHS.length, icon: Cpu },
                       { label: "总大小", value: totalBytes, icon: HardDrive },
                     ].map((s, i) => (
@@ -803,7 +879,7 @@ export default function PackagesWorkspace({
                           <div className="pc-arch-row" key={a.arch}>
                             <span className="pc-arch-name"><ArchIcon arch={a.arch} />{a.arch}</span>
                             <span className="gw-category-track pc-arch-track">
-                              <i style={{ width: `${PACKAGES.length ? (a.count / PACKAGES.length) * 100 : 0}%` }} />
+                              <i style={{ width: `${pkgs.length ? (a.count / pkgs.length) * 100 : 0}%` }} />
                             </span>
                             <strong>{a.count}</strong>
                           </div>
@@ -816,7 +892,7 @@ export default function PackagesWorkspace({
                         <span>v2 · 玻璃版</span>
                       </div>
                       <p className="pc-about">
-                        本页采用玻璃工作台的玻璃拟态设计语言重制，数据来自本地 SSPKS-IMNKS 套件源中的真实 SPK（{PACKAGES.length} 个）。
+                        本页采用玻璃工作台的玻璃拟态设计语言重制，数据来自本地 SSPKS-IMNKS 套件源中的真实 SPK（{pkgs.length} 个）。
                         调整右上角的<strong>设置</strong>可实时改变玻璃材质。
                       </p>
                       <a
@@ -845,7 +921,7 @@ export default function PackagesWorkspace({
                 <X size={17} aria-hidden="true" />
               </button>
             </div>
-            <p>已收录 {PACKAGES.length} 个套件，无新通知。</p>
+            <p>已收录 {pkgs.length} 个套件，无新通知。</p>
           </aside>
         )}
 
@@ -925,7 +1001,14 @@ export default function PackagesWorkspace({
               <dt>最低 DSM</dt><dd>DSM {selected.dsm}+</dd>
               <dt>渠道</dt><dd>{selected.ch === "stable" ? "稳定版" : "测试版"}</dd>
               <dt>体积</dt><dd>{selected.size}</dd>
-              <dt>来源</dt><dd>本地构建 · SSPKS-IMNKS</dd>
+              <dt>来源</dt>
+              <dd>
+                {selected.origin === "upload"
+                  ? "本地上传"
+                  : selected.origin === "scan"
+                    ? "目录自动扫描"
+                    : "本地构建 · SSPKS-IMNKS"}
+              </dd>
             </dl>
             <div className="mtitle">支持架构</div>
             <div className="march">
@@ -936,9 +1019,24 @@ export default function PackagesWorkspace({
             <button className="btn" type="button" onClick={() => download(selected)}>
               <ArrowDownToLine size={17} aria-hidden="true" />下载安装包（{selected.size}）
             </button>
+            {serverMode && selected.origin && selected.origin !== "builtin" && (
+              <button className="gw-button pc-remove" type="button" onClick={() => void removePackage(selected)}>
+                <Trash2 size={14} aria-hidden="true" />从套件中心移除
+              </button>
+            )}
           </aside>
         </div>
       )}
+
+      <PackageUpload
+        open={uploadOpen}
+        onClose={() => setUploadOpen(false)}
+        tokenRequired={tokenRequired}
+        onUploaded={(message) => {
+          setNotice(message);
+          void loadPackages();
+        }}
+      />
 
       {notice && (
         <div className="gw-toast" role="status">
@@ -1022,4 +1120,34 @@ const pcStyles = `
   .pc-list-size{display:none}
   .pc-source-strong{font-size:15px !important}
 }
+.pc-up-open{padding:7px 12px;font-size:11px !important;border-radius:8px;white-space:nowrap}
+.pc-tag-local{color:var(--gw-accent);background:var(--gw-income-surface);font-weight:600}
+.pc-remove{margin-top:10px;width:100%;justify-content:center;color:#d9534f;border-color:rgba(217,83,79,.35) !important}
+.pc-up{width:min(520px,100%);border-radius:22px;padding:24px;background:var(--gw-popover);border:1px solid var(--gw-line)}
+.pc-up-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}
+.pc-up-head h2{font-size:18px;font-weight:600;letter-spacing:-0.02em}
+.pc-up-head p{font-size:11.5px;color:var(--gw-muted);line-height:1.6;margin-top:5px}
+.pc-up-drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;text-align:center;padding:30px 18px;border-radius:16px;border:1.5px dashed var(--gw-line);background:var(--gw-goal-surface);cursor:pointer;transition:border-color .18s ease,background .18s ease,transform .18s ease}
+.pc-up-drop:hover{border-color:var(--gw-accent);transform:translateY(-1px)}
+.pc-up-drop.is-drag{border-color:var(--gw-accent);border-style:solid;background:var(--gw-income-surface)}
+.pc-up-drop.has-file{border-style:solid;border-color:var(--gw-accent)}
+.pc-up-drop strong{font-size:12.5px;font-weight:600;word-break:break-all}
+.pc-up-drop span{font-size:11px;color:var(--gw-muted)}
+.pc-up-icon{display:grid;place-items:center;width:46px;height:46px;border-radius:13px;background:var(--gw-income-surface);color:var(--gw-accent);margin-bottom:2px}
+.pc-up-token{display:flex;flex-direction:column;gap:6px;margin-top:14px;font-size:11px;color:var(--gw-muted)}
+.pc-up-token input{padding:8px 10px;border-radius:8px;border:1px solid var(--gw-line);background:var(--gw-panel);color:var(--gw-text);font-size:12px}
+.pc-up-progress{position:relative;height:22px;border-radius:7px;background:var(--gw-goal-surface);overflow:hidden;margin-top:14px}
+.pc-up-progress span{position:absolute;inset:0 auto 0 0;background:var(--gw-accent);opacity:.35;transition:width .2s ease}
+.pc-up-progress em{position:absolute;inset:0;display:grid;place-items:center;font-size:10.5px;font-style:normal;color:var(--gw-text);font-weight:600}
+.pc-up-msg{display:flex;align-items:center;gap:8px;margin-top:14px;padding:10px 12px;border-radius:10px;font-size:11.5px;line-height:1.5}
+.pc-up-msg svg{flex:none}
+.pc-up-msg.is-error{background:rgba(217,83,79,.1);color:#d9534f}
+.pc-up-msg.is-done{background:var(--gw-income-surface);color:var(--gw-text);align-items:flex-start}
+.pc-up-msg.is-done div{display:flex;flex-direction:column;gap:2px}
+.pc-up-msg.is-done span{font-size:10.5px;color:var(--gw-muted)}
+.pc-up-foot{display:flex;justify-content:flex-end;gap:9px;margin-top:18px}
+.pc-up-send{background:var(--gw-accent) !important;color:#fff !important;border-color:transparent !important}
+.pc-up-send:disabled{opacity:.5;cursor:not-allowed}
+.pc-spin{animation:pc-spin .9s linear infinite}
+@keyframes pc-spin{to{transform:rotate(360deg)}}
 `;

@@ -11,3 +11,9 @@ services:
       - "8380:80"
     environment:
       - TZ=Asia/Shanghai
+      - GPC_SCAN_INTERVAL=30
+    volumes:
+      # 上传的安装包与登记表：不挂卷的话，重建容器会丢
+      - ./data:/data
+      # 可选：把 SPK 打包目录只读挂进来，新生成的包会自动收录
+      # - /volume1/docker/spk-studio/builds:/import:ro
