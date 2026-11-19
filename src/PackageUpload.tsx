@@ -27,7 +27,13 @@ export default function PackageUpload({ open, onClose, onUploaded, tokenRequired
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState<UploadedPkg | null>(null);
-  const [token, setToken] = useState("");
+  const [token, setToken] = useState(() => {
+    try {
+      return window.localStorage.getItem("gpc_token") || "";
+    } catch {
+      return "";
+    }
+  });
 
   if (!open) return null;
 
@@ -82,6 +88,12 @@ export default function PackageUpload({ open, onClose, onUploaded, tokenRequired
         data = null;
       }
       if (xhr.status >= 200 && xhr.status < 300 && data?.ok) {
+        // 令牌存下来，后续删除 / 上下线可直接复用
+        try {
+          if (token) window.localStorage.setItem("gpc_token", token);
+        } catch {
+          /* 隐私模式下写入会失败，忽略 */
+        }
         setDone(data.package ?? { name: file.name });
         setProgress(100);
         setFile(null);

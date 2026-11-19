@@ -11,8 +11,10 @@ import {
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import {
+  ArrowDownRight,
   ArrowDownToLine,
   ArrowRight,
+  ArrowUpRight,
   Bell,
   Check,
   ChevronRight,
@@ -26,7 +28,10 @@ import {
   Moon,
   Package,
   Pencil,
+  Power,
+  PowerOff,
   Search,
+  Server,
   Settings2,
   ShieldCheck,
   Sun,
@@ -40,6 +45,7 @@ import {
 } from "lucide-react";
 import { styles } from "./gw-styles";
 import { PACKAGES, SOURCE, type Pkg } from "./packages.data";
+import { MODEL_ARCHS, MODEL_GROUPS } from "./models.data";
 import SpkStudio from "./SpkStudio";
 import PackageUpload from "./PackageUpload";
 
@@ -61,11 +67,36 @@ const defaults: GlassSettings = {
   edge: 0.6,
 };
 
+// 与 SSPKS-IMNKS 上游 conf/sspks.yaml footer.columns 保持一致
+const FRIEND_LINKS = [
+  {
+    title: "套件资源",
+    links: [
+      { label: "Synology Download Center", url: "https://www.synology.com/support/download" },
+      { label: "Synology Archive", url: "https://archive.synology.com/download" },
+    ],
+  },
+  {
+    title: "社区",
+    links: [
+      { label: "IMNKS.COM", url: "https://imnks.com/" },
+      { label: "SynoCommunity", url: "https://synocommunity.com/" },
+    ],
+  },
+  {
+    title: "相关项目",
+    links: [
+      { label: "jdel/sspks", url: "https://github.com/jdel/sspks" },
+      { label: "SSPKS-IMNKS", url: "https://github.com/tbc0309/sspks-imnks" },
+    ],
+  },
+];
+
 const tabs = [
   { id: "browse", label: "套件", icon: Home },
   { id: "studio", label: "打包", icon: Hammer },
   { id: "installed", label: "已收录", icon: Boxes },
-  { id: "source", label: "套件来源", icon: Layers },
+  { id: "models", label: "机型", icon: Server },
   { id: "about", label: "关于", icon: Info },
 ] as const;
 type View = (typeof tabs)[number]["id"];
@@ -78,6 +109,100 @@ const PKG_LABELS: Record<string, string> = {
   sspksrepo: "自托管套件中心",
 };
 const displayPkgId = (p: Pkg) => PKG_LABELS[p.en] ?? p.en;
+
+const ARCH_COLORS = ["#3b82f6", "#8ab4f8", "#34d399"];
+
+/** 环形图：按架构数量占比拆环，对应参考图第一张卡片的甜甜圈 */
+function StatDonut({ data }: { data: { arch: string; count: number }[] }) {
+  const total = data.reduce((sum, d) => sum + d.count, 0);
+  const radius = 20;
+  const ring = 2 * Math.PI * radius;
+  let acc = 0;
+  return (
+    <svg className="pc-stat-chart pc-stat-chart-donut" viewBox="0 0 56 56" aria-hidden="true">
+      <circle cx="28" cy="28" r={radius} fill="none" stroke="var(--gw-line)" strokeWidth="10" />
+      {total > 0 &&
+        data.map((d, i) => {
+          if (!d.count) return null;
+          const len = (d.count / total) * ring;
+          const node = (
+            <circle
+              key={d.arch}
+              cx="28"
+              cy="28"
+              r={radius}
+              fill="none"
+              stroke={ARCH_COLORS[i % ARCH_COLORS.length]}
+              strokeWidth="10"
+              strokeDasharray={`${Math.max(len - 2.6, 0.8)} ${ring}`}
+              strokeDashoffset={-acc}
+              transform="rotate(-90 28 28)"
+            />
+          );
+          acc += len;
+          return node;
+        })}
+    </svg>
+  );
+}
+
+/** 折线图：把一组数值平滑连成走势线，对应参考图右侧的迷你曲线 */
+function StatSpark({ values, color }: { values: number[]; color: string }) {
+  const w = 86;
+  const h = 42;
+  const pad = 4;
+  const pts = values.length >= 2 ? values : [values[0] ?? 0, values[0] ?? 0];
+  const min = Math.min(...pts);
+  const max = Math.max(...pts);
+  const span = max - min || 1;
+  const step = (w - pad * 2) / (pts.length - 1);
+  const coords = pts.map((v, i) => ({
+    x: pad + i * step,
+    y: h - pad - ((v - min) / span) * (h - pad * 2),
+  }));
+  let d = `M${coords[0].x.toFixed(2)},${coords[0].y.toFixed(2)}`;
+  for (let i = 1; i < coords.length; i += 1) {
+    const prev = coords[i - 1];
+    const cur = coords[i];
+    const dx = (cur.x - prev.x) / 2.6;
+    d += ` C${(prev.x + dx).toFixed(2)},${prev.y.toFixed(2)} ${(cur.x - dx).toFixed(2)},${cur.y.toFixed(2)} ${cur.x.toFixed(2)},${cur.y.toFixed(2)}`;
+  }
+  return (
+    <svg className="pc-stat-chart" viewBox={`0 0 ${w} ${h}`} aria-hidden="true">
+      <path d={d} fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** 柱状图：把一组数值画成等宽柱子，颜色由回调决定 */
+function StatBars({ values, fill }: { values: number[]; fill: (index: number, value: number) => string }) {
+  const count = Math.max(values.length, 1);
+  const max = Math.max(...values, 1);
+  const w = 86;
+  const h = 42;
+  const gap = 4;
+  const bar = (w - gap * (count - 1)) / count;
+  return (
+    <svg className="pc-stat-chart" viewBox={`0 0 ${w} ${h}`} aria-hidden="true">
+      {values.map((v, i) => {
+        const height = Math.max(6, (v / max) * 32);
+        return (
+          <rect
+            key={i}
+            x={i * (bar + gap)}
+            y={h - 5 - height}
+            width={bar}
+            height={height}
+            rx="3"
+            fill={fill(i, v)}
+            opacity="0.92"
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
 
 const SOURCE_KEY = "wb_gpc_source_url";
 type SourceCfg = {
@@ -217,6 +342,8 @@ export default function PackagesWorkspace({
   const [cat, setCat] = useState<string>("全部");
   const [arch, setArch] = useState<string>("全部");
   const [channel, setChannel] = useState<string>("全部");
+  const [modelQuery, setModelQuery] = useState("");
+  const [modelArch, setModelArch] = useState<string>("全部");
   const [notice, setNotice] = useState("");
   const [alerts, setAlerts] = useState(false);
   const [selected, setSelected] = useState<Pkg | null>(null);
@@ -272,6 +399,38 @@ export default function PackagesWorkspace({
     }
   };
 
+  // 上线 / 下线：下线后该套件不再出现在 DSM 套件来源清单，页面保留并标注
+  const setOnline = async (p: Pkg, online: boolean) => {
+    if (!online && !window.confirm(`将「${p.name}」下线？下线后 DSM 套件中心不再显示它，已安装的不受影响。`)) return;
+    try {
+      let token = "";
+      try {
+        token = window.localStorage.getItem("gpc_token") || "";
+      } catch {
+        token = "";
+      }
+      const q = new URLSearchParams();
+      if (token) q.set("token", token);
+      const res = await fetch(`api/packages/${encodeURIComponent(p.file)}/status?${q}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ online }),
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.ok) {
+        setNotice(online ? `「${p.name}」已上线，DSM 套件中心可见` : `「${p.name}」已下线，DSM 套件中心不再显示`);
+        setSelected((cur) => (cur && cur.file === p.file ? { ...cur, online } : cur));
+        void loadPackages();
+      } else if (res.status === 403) {
+        setNotice("需要管理令牌：请在上传弹窗中填写令牌后重试");
+      } else {
+        setNotice(data?.error || "操作失败");
+      }
+    } catch {
+      setNotice("操作失败：无法连接服务");
+    }
+  };
+
   useEffect(
     () => setMaterial(normalize(defaults)),
     [],
@@ -299,9 +458,22 @@ export default function PackagesWorkspace({
     arch: a,
     count: pkgs.filter((p) => p.arch.includes(a)).length,
   }));
-  const catCounts = CATS.slice(1)
-    .map((c) => ({ cat: c, count: pkgs.filter((p) => p.cat === c).length }))
-    .filter((x) => x.count > 0);
+
+  // 统计卡片的数据源
+  const stableCount = pkgs.filter((p) => p.ch === "stable").length;
+  const betaCount = pkgs.length - stableCount;
+  const onlineCount = pkgs.filter((p) => p.online !== false).length;
+  const offlineCount = pkgs.length - onlineCount;
+  const share = (n: number) => (pkgs.length ? Math.round((n / pkgs.length) * 100) : 0);
+  const archTop = archCounts.reduce((a, b) => (b.count > a.count ? b : a), archCounts[0]);
+  const avgBytes = pkgs.length ? totalBytes / pkgs.length : 0;
+  const sizeCurve = (() => {
+    const sorted = pkgs.map((p) => p.sizeBytes).sort((a, b) => a - b);
+    let acc = 0;
+    return sorted.map((v) => (acc += v));
+  })();
+  const maxBytes = sizeCurve.length ? sizeCurve[sizeCurve.length - 1] : 0;
+  const maxSingle = pkgs.reduce((m, p) => Math.max(m, p.sizeBytes), 0);
 
   const visible = useMemo(
     () =>
@@ -315,6 +487,20 @@ export default function PackagesWorkspace({
       }),
     [filter, cat, arch, channel, pkgs],
   );
+
+  const filteredModels = useMemo(() => {
+    const q = modelQuery.trim().toLowerCase();
+    return MODEL_GROUPS
+      .filter((g) => modelArch === "全部" || g.arch === modelArch)
+      .map((g) => {
+        const platformHit = !!q && g.platform.toLowerCase().includes(q);
+        const models = !q || platformHit
+          ? g.models
+          : g.models.filter((m) => m.toLowerCase().includes(q));
+        return { ...g, models };
+      })
+      .filter((g) => !q || g.models.length > 0);
+  }, [modelQuery, modelArch]);
 
   useGSAP(
     () => {
@@ -463,7 +649,7 @@ export default function PackagesWorkspace({
 
   const pkgCard = (p: Pkg) => (
     <article
-      className="pc-card gw-panel gw-reveal"
+      className={`pc-card gw-panel gw-reveal${p.online === false ? " is-offline" : ""}`}
       key={p.file}
       tabIndex={0}
       role="button"
@@ -493,6 +679,7 @@ export default function PackagesWorkspace({
         ))}
         <span className="pc-tag">DSM {p.dsm}+</span>
         {p.origin && p.origin !== "builtin" && <span className="pc-tag pc-tag-local">本地导入</span>}
+        {p.online === false && <span className="pc-tag pc-tag-offline">已下线</span>}
       </div>
       <div className="pc-card-foot">
         <span className="pc-size"><HardDrive size={13} aria-hidden="true" />{p.size}</span>
@@ -506,6 +693,82 @@ export default function PackagesWorkspace({
         </button>
       </div>
     </article>
+  );
+
+  const sourceAddress = (
+    <div className="gw-savings-intro gw-reveal">
+      <span className="gw-savings-orb"><Layers size={28} strokeWidth={1.3} aria-hidden="true" /></span>
+      <div className="pc-source-main">
+        <p>套件来源地址</p>
+        {editingSource ? (
+          <input
+            className="pc-source-input"
+            value={sourceDraft}
+            autoFocus
+            spellCheck={false}
+            aria-label="套件来源地址"
+            placeholder="https://your-nas.example.com/sspks/"
+            onChange={(e) => setSourceDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") applySourceEdit();
+              if (e.key === "Escape") setEditingSource(false);
+            }}
+          />
+        ) : (
+          <strong className="pc-source-strong">{source.url}</strong>
+        )}
+      </div>
+      <div className="pc-source-actions">
+        {editingSource ? (
+          <>
+            <button type="button" className="gw-button pc-copy" onClick={applySourceEdit}>
+              <Check size={14} aria-hidden="true" />保存
+            </button>
+            <button type="button" className="gw-button pc-copy" onClick={() => setEditingSource(false)}>
+              <X size={14} aria-hidden="true" />取消
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" className="gw-button pc-copy" onClick={copySource}>
+              <Copy size={14} aria-hidden="true" />复制
+            </button>
+            <button
+              type="button"
+              className="gw-button pc-copy"
+              onClick={() => { setSourceDraft(source.url); setEditingSource(true); }}
+            >
+              <Pencil size={14} aria-hidden="true" />修改
+            </button>
+            {source.custom && (
+              <button type="button" className="gw-button pc-copy" onClick={resetSource}>
+                <X size={14} aria-hidden="true" />重置
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+
+  const sourceDetails = (
+    <>
+    <section className="gw-panel gw-reveal">
+      <div className="gw-panel-title">
+        <h2>在 DSM 中添加</h2>
+        <span>3 步完成</span>
+      </div>
+      <ol className="pc-steps">
+        <li><strong>打开套件中心</strong><span>DSM 桌面 → 套件中心 → 设置</span></li>
+        <li><strong>新增套件来源</strong><span>「套件来源」→「新增」，粘贴上面复制的地址</span></li>
+        <li><strong>安装套件</strong><span>确认后即可在列表中看到并安装本站套件</span></li>
+      </ol>
+    </section>
+    <section className="gw-savings-note gw-reveal pc-source-note">
+      <Info size={18} aria-hidden="true" />
+      <p>{source.note}</p>
+    </section>
+    </>
   );
 
   return (
@@ -611,9 +874,9 @@ export default function PackagesWorkspace({
                       ? "在浏览器里打包你自己的 DSM 7 套件。"
                       : view === "installed"
                         ? "当前套件源收录的全部套件。"
-                        : view === "source"
-                          ? "把此地址添加到 DSM 套件中心。"
-                          : "关于这个套件中心演示。"}
+                          : view === "models"
+                            ? "按架构与平台查询支持的 Synology 机型。"
+                            : "关于这个套件中心演示。"}
                 </p>
                 <h1>
                   {view === "browse"
@@ -622,15 +885,17 @@ export default function PackagesWorkspace({
                       ? "SPK 工作室"
                       : view === "installed"
                         ? "已收录套件"
-                        : view === "source"
-                          ? "套件来源"
+                        : view === "models"
+                          ? "机型列表"
                           : "关于"}
                 </h1>
               </div>
               <div className="gw-heading-action">
                 <span className="gw-date">
                   <CircleCheck size={14} aria-hidden="true" />
-                  {pkgs.length} 个套件 · {fmtBytes(totalBytes)}
+                  {view === "models"
+                    ? `${MODEL_GROUPS.reduce((n, g) => n + g.models.length, 0)} 个机型 · ${MODEL_GROUPS.length} 个平台`
+                    : `${pkgs.length} 个套件 · ${fmtBytes(totalBytes)}`}
                 </span>
               </div>
             </div>
@@ -639,64 +904,110 @@ export default function PackagesWorkspace({
             <div ref={content} key={view} className="gw-view">
               {view === "browse" && (
                 <>
-                  <div className="gw-overview-grid">
-                    <section className="gw-panel gw-balance gw-reveal">
-                      <div className="gw-panel-title">
-                        <span>套件总数</span>
-                        <Package size={17} aria-hidden="true" />
+                  {sourceAddress}
+
+                  <div className="pc-stats">
+                    <article className="gw-panel pc-stat gw-reveal">
+                      <div className="pc-stat-head">
+                        <span className="pc-stat-label"><Package size={14} aria-hidden="true" />套件总数</span>
+                        <Info size={13} className="pc-stat-info" aria-hidden="true" />
                       </div>
-                      <strong className="gw-balance-value">{pkgs.length}</strong>
-                      <p className="gw-balance-meta">
-                        <span className="gw-positive gw-badge">{pkgs.filter((p) => p.ch === "stable").length} 稳定版</span>
-                        {pkgs.filter((p) => p.ch !== "stable").length} 测试版
-                      </p>
-                      <div className="gw-account">
-                        <span className="gw-account-icon"><HardDrive size={19} aria-hidden="true" /></span>
-                        <div>
-                          <strong>总大小</strong>
-                          <span>{fmtBytes(totalBytes)}</span>
+                      <div className="pc-stat-body">
+                        <div className="pc-stat-main">
+                          <strong className="pc-stat-value">{pkgs.length}</strong>
+                          <span className="pc-stat-sub">{stableCount} 稳定版 · {betaCount} 测试版</span>
                         </div>
-                        <button type="button" aria-label="查看已收录" onClick={() => changeView("installed")}>
-                          <ArrowRight size={20} aria-hidden="true" />
-                        </button>
+                        <StatDonut data={archCounts} />
                       </div>
-                    </section>
-                    <section className="gw-panel gw-cashflow gw-reveal">
-                      <div className="gw-panel-title">
-                        <h2>架构分布</h2>
-                        <span>{ARCHS.length} 类架构</span>
+                      <p className="pc-stat-foot">
+                        <span>详情</span>
+                        <em className="is-up">
+                          <ArrowUpRight size={12} aria-hidden="true" />稳定率 {share(stableCount)}%
+                        </em>
+                      </p>
+                    </article>
+
+                    <article className="gw-panel pc-stat gw-reveal">
+                      <div className="pc-stat-head">
+                        <span className="pc-stat-label"><CircleCheck size={14} aria-hidden="true" />在线套件</span>
+                        <Info size={13} className="pc-stat-info" aria-hidden="true" />
                       </div>
-                      <div className="pc-arch-bars">
-                        {archCounts.map((a) => (
-                          <div className="pc-arch-row" key={a.arch}>
-                            <span className="pc-arch-name"><ArchIcon arch={a.arch} />{a.arch}</span>
-                            <span className="gw-category-track pc-arch-track">
-                              <i style={{ width: `${pkgs.length ? (a.count / pkgs.length) * 100 : 0}%` }} />
-                            </span>
-                            <strong>{a.count}</strong>
-                          </div>
-                        ))}
+                      <div className="pc-stat-body">
+                        <div className="pc-stat-main">
+                          <strong className="pc-stat-value">{onlineCount}</strong>
+                          <span className="pc-stat-sub">
+                            {offlineCount ? `${offlineCount} 个已下线` : "全部在线可安装"}
+                          </span>
+                        </div>
+                        <StatBars
+                          values={pkgs.map((p) => (p.online !== false ? 1 : 0.38))}
+                          fill={(_, v) => (v > 0.5 ? "var(--gw-accent)" : "#dc2626")}
+                        />
                       </div>
-                      <div className="pc-arch-foot">
-                        {catCounts.map((c) => (
-                          <span className="pc-mini-tag" key={c.cat}>{c.cat} · {c.count}</span>
-                        ))}
+                      <p className="pc-stat-foot">
+                        <span>详情</span>
+                        <em className={offlineCount ? "is-down" : "is-up"}>
+                          {offlineCount
+                            ? <ArrowDownRight size={12} aria-hidden="true" />
+                            : <ArrowUpRight size={12} aria-hidden="true" />}
+                          在线率 {share(onlineCount)}%
+                        </em>
+                      </p>
+                    </article>
+
+                    <article className="gw-panel pc-stat gw-reveal">
+                      <div className="pc-stat-head">
+                        <span className="pc-stat-label"><Cpu size={14} aria-hidden="true" />架构种类</span>
+                        <Info size={13} className="pc-stat-info" aria-hidden="true" />
                       </div>
-                    </section>
+                      <div className="pc-stat-body">
+                        <div className="pc-stat-main">
+                          <strong className="pc-stat-value">{ARCHS.length}</strong>
+                          <span className="pc-stat-sub">
+                            {archCounts.map((a) => `${a.arch} ${a.count}`).join(" · ")}
+                          </span>
+                        </div>
+                        <StatBars
+                          values={archCounts.map((a) => a.count)}
+                          fill={(i) => ARCH_COLORS[i % ARCH_COLORS.length]}
+                        />
+                      </div>
+                      <p className="pc-stat-foot">
+                        <span>详情</span>
+                        <em className="is-up">
+                          <ArrowUpRight size={12} aria-hidden="true" />最多 {archTop.arch} {share(archTop.count)}%
+                        </em>
+                      </p>
+                    </article>
+
+                    <article className="gw-panel pc-stat gw-reveal">
+                      <div className="pc-stat-head">
+                        <span className="pc-stat-label"><HardDrive size={14} aria-hidden="true" />总大小</span>
+                        <Info size={13} className="pc-stat-info" aria-hidden="true" />
+                      </div>
+                      <div className="pc-stat-body">
+                        <div className="pc-stat-main">
+                          <strong className="pc-stat-value is-text">{fmtBytes(totalBytes)}</strong>
+                          <span className="pc-stat-sub">平均 {fmtBytes(avgBytes)} / 个</span>
+                        </div>
+                        <StatSpark values={sizeCurve} color="#3b82f6" />
+                      </div>
+                      <p className="pc-stat-foot">
+                        <span>详情</span>
+                        <em className="is-up">
+                          <ArrowUpRight size={12} aria-hidden="true" />最大 {fmtBytes(maxSingle)}
+                        </em>
+                      </p>
+                    </article>
                   </div>
+
+                  {sourceDetails}
 
                   <div className="pc-section-head gw-reveal">
                     <div>
                       <h2>全部套件</h2>
                       <span>共 {visible.length} 个结果</span>
                     </div>
-                    <button
-                      type="button"
-                      className="gw-button pc-up-open"
-                      onClick={() => (serverMode ? setUploadOpen(true) : setNotice("当前是静态页面，上传需在容器中运行服务"))}
-                    >
-                      <Upload size={13} aria-hidden="true" />上传套件
-                    </button>
                   </div>
                   <div className="pc-filters gw-reveal">
                     <label className="gw-search pc-search">
@@ -758,6 +1069,7 @@ export default function PackagesWorkspace({
                         </div>
                         <span className="pc-tag pc-tag-arch">{p.arch.join(" · ")}</span>
                         {p.origin && p.origin !== "builtin" && <span className="pc-tag pc-tag-local">本地</span>}
+                        {p.online === false && <span className="pc-tag pc-tag-offline">已下线</span>}
                         <span className="pc-list-size">{p.size}</span>
                         <button type="button" className="gw-button" onClick={() => download(p)}>
                           <Download size={13} aria-hidden="true" />下载
@@ -777,76 +1089,55 @@ export default function PackagesWorkspace({
                 </section>
               )}
 
-              {view === "source" && (
+              {view === "models" && (
                 <>
-                  <div className="gw-savings-intro gw-reveal">
-                    <span className="gw-savings-orb"><Layers size={28} strokeWidth={1.3} aria-hidden="true" /></span>
-                    <div className="pc-source-main">
-                      <p>套件来源地址</p>
-                      {editingSource ? (
-                        <input
-                          className="pc-source-input"
-                          value={sourceDraft}
-                          autoFocus
-                          spellCheck={false}
-                          aria-label="套件来源地址"
-                          placeholder="https://your-nas.example.com/sspks/"
-                          onChange={(e) => setSourceDraft(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") applySourceEdit();
-                            if (e.key === "Escape") setEditingSource(false);
-                          }}
-                        />
-                      ) : (
-                        <strong className="pc-source-strong">{source.url}</strong>
+                  <div className="pc-filters gw-reveal">
+                    <label className="gw-search pc-search">
+                      <Search size={15} aria-hidden="true" />
+                      <input
+                        aria-label="搜索机型或平台"
+                        placeholder="搜索型号（如 DS920+）或平台…"
+                        value={modelQuery}
+                        onChange={(e) => setModelQuery(e.target.value)}
+                      />
+                      {modelQuery && (
+                        <button type="button" aria-label="清除机型搜索" onClick={() => setModelQuery("")}>
+                          <X size={14} aria-hidden="true" />
+                        </button>
                       )}
-                    </div>
-                    <div className="pc-source-actions">
-                      {editingSource ? (
-                        <>
-                          <button type="button" className="gw-button pc-copy" onClick={applySourceEdit}>
-                            <Check size={14} aria-hidden="true" />保存
-                          </button>
-                          <button type="button" className="gw-button pc-copy" onClick={() => setEditingSource(false)}>
-                            <X size={14} aria-hidden="true" />取消
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button type="button" className="gw-button pc-copy" onClick={copySource}>
-                            <Copy size={14} aria-hidden="true" />复制
-                          </button>
-                          <button
-                            type="button"
-                            className="gw-button pc-copy"
-                            onClick={() => { setSourceDraft(source.url); setEditingSource(true); }}
-                          >
-                            <Pencil size={14} aria-hidden="true" />修改
-                          </button>
-                          {source.custom && (
-                            <button type="button" className="gw-button pc-copy" onClick={resetSource}>
-                              <X size={14} aria-hidden="true" />重置
-                            </button>
-                          )}
-                        </>
-                      )}
+                    </label>
+                    <div className="gw-segment" role="group" aria-label="机型架构筛选">
+                      {["全部", ...MODEL_ARCHS].map((a) => (
+                        <button key={a} type="button" aria-pressed={modelArch === a} onClick={() => setModelArch(a)}>{a}</button>
+                      ))}
                     </div>
                   </div>
-                  <section className="gw-panel gw-reveal">
-                    <div className="gw-panel-title">
-                      <h2>在 DSM 中添加</h2>
-                      <span>3 步完成</span>
+
+                  {filteredModels.length ? (
+                    <div className="pc-model-grid">
+                      {filteredModels.map((g) => (
+                        <section className="gw-panel pc-model-card gw-reveal" key={g.platform}>
+                          <div className="pc-model-head">
+                            <span className="pc-tag pc-tag-arch"><ArchIcon arch={g.arch} />{g.arch}</span>
+                            <strong>{g.platform}</strong>
+                            <span>{g.models.length} 款</span>
+                          </div>
+                          <div className="pc-model-list">
+                            {g.models.map((m) => <span key={m}>{m}</span>)}
+                          </div>
+                        </section>
+                      ))}
                     </div>
-                    <ol className="pc-steps">
-                      <li><strong>打开套件中心</strong><span>DSM 桌面 → 套件中心 → 设置</span></li>
-                      <li><strong>新增套件来源</strong><span>「套件来源」→「新增」，粘贴上面复制的地址</span></li>
-                      <li><strong>安装套件</strong><span>确认后即可在列表中看到并安装本站套件</span></li>
-                    </ol>
-                  </section>
-                  <section className="gw-savings-note gw-reveal pc-source-note">
-                    <Info size={18} aria-hidden="true" />
-                    <p>{source.note}</p>
-                  </section>
+                  ) : (
+                    <div className="gw-empty pc-empty">
+                      <Server size={23} aria-hidden="true" />
+                      <h3>没有匹配的机型</h3>
+                      <p>换个型号或平台关键词试试。</p>
+                      <button type="button" onClick={() => { setModelQuery(""); setModelArch("全部"); }}>
+                        清除筛选
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
 
@@ -912,6 +1203,20 @@ export default function PackagesWorkspace({
             <div className="gw-desktop-dock">{nav()}</div>
           </main>
         </div>
+
+        <footer className="pc-friends" aria-label="友情链接">
+          <span className="pc-friends-title">友情链接</span>
+          {FRIEND_LINKS.map((col) => (
+            <div className="pc-friends-col" key={col.title}>
+              <strong>{col.title}</strong>
+              {col.links.map((link) => (
+                <a href={link.url} key={link.url} target="_blank" rel="noopener noreferrer">
+                  {link.label}
+                </a>
+              ))}
+            </div>
+          ))}
+        </footer>
 
         {alerts && (
           <aside className="gw-notifications gw-glass" aria-label="通知">
@@ -992,6 +1297,25 @@ export default function PackagesWorkspace({
             <h2>{selected.name}</h2>
             <span className="pc-modal-en">{displayPkgId(selected)}</span>
             <span className="gw-mver">版本 {selected.v} · DSM {selected.dsm}+</span>
+            {serverMode && (
+              <div className="pc-state-row">
+                <span className={`pc-state ${selected.online === false ? "is-off" : "is-on"}`}>
+                  {selected.online === false ? "已下线 · DSM 套件中心不显示" : "已上线 · DSM 套件中心可见"}
+                </span>
+                <button
+                  type="button"
+                  className="gw-button pc-state-btn"
+                  onClick={() => void setOnline(selected, selected.online === false)}
+                >
+                  {selected.online === false ? (
+                    <Power size={13} aria-hidden="true" />
+                  ) : (
+                    <PowerOff size={13} aria-hidden="true" />
+                  )}
+                  {selected.online === false ? "上线" : "下线"}
+                </button>
+              </div>
+            )}
             <p className="gw-mdesc">{selected.long}</p>
             <div className="mtitle">详细信息</div>
             <dl className="kv">
@@ -1076,6 +1400,41 @@ const pcStyles = `
 .pc-filters{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
 .pc-search{flex:1;min-width:210px}
 .pc-search input{width:100%;min-width:0}
+.pc-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.gw-panel.pc-stat{padding:16px 17px 14px;border-radius:14px;display:flex;flex-direction:column;gap:0}
+.pc-stat-head{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--gw-muted);white-space:nowrap}
+.pc-stat-label{display:inline-flex;align-items:center;gap:6px;font-weight:500;min-width:0}
+.pc-stat-label svg{flex:none;opacity:.85}
+.pc-stat-info{margin-left:auto;flex:none;opacity:.4}
+.pc-stat-body{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px;flex:1;min-width:0}
+.pc-stat-main{display:flex;flex-direction:column;gap:5px;min-width:0}
+.pc-stat-value{font-size:27px;font-weight:700;letter-spacing:-.03em;line-height:1.05;color:var(--gw-ink)}
+.pc-stat-value.is-text{font-size:21px;letter-spacing:-.02em}
+.pc-stat-sub{font-size:10.5px;color:var(--gw-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pc-stat-chart{width:62px;height:44px;flex:none;overflow:visible}
+.pc-stat-chart-donut{width:50px;height:50px}
+.pc-model-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
+.gw-panel.pc-model-card{padding:15px 16px;border-radius:14px;display:flex;flex-direction:column;gap:12px}
+.pc-model-head{display:flex;align-items:center;gap:8px;min-width:0}
+.pc-model-head strong{font-size:12px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pc-model-head>span:last-child{margin-left:auto;font-size:10px;color:var(--gw-muted);white-space:nowrap;flex:none}
+.pc-model-list{display:flex;flex-wrap:wrap;gap:6px}
+.pc-model-list span{font-size:10px;padding:3px 7px;border-radius:6px;background:var(--gw-goal-surface);color:var(--gw-ink);white-space:nowrap}
+.pc-friends{width:min(1280px,100%);margin:14px auto 0;padding:13px 19px;border-radius:16px;display:flex;align-items:center;gap:18px 26px;flex-wrap:wrap;border:1px solid var(--gw-line);background:color-mix(in srgb,var(--gw-surface) calc(var(--gw-opacity) * 100%),transparent);backdrop-filter:blur(var(--gw-blur)) saturate(var(--gw-saturation));-webkit-backdrop-filter:blur(var(--gw-blur)) saturate(var(--gw-saturation))}
+.pc-friends-title{font-size:11px;font-weight:600;color:var(--gw-ink);white-space:nowrap}
+.pc-friends-col{display:flex;align-items:center;gap:9px 12px;flex-wrap:wrap}
+.pc-friends-col strong{font-size:10.5px;font-weight:500;color:var(--gw-muted);white-space:nowrap}
+.pc-friends-col a{font-size:10.5px;color:var(--gw-accent);text-decoration:none;white-space:nowrap}
+.pc-friends-col a:hover{text-decoration:underline}
+.pc-stat-foot{display:flex;align-items:baseline;gap:6px;margin:13px 0 0;font-size:11px}
+.pc-stat-foot>span{font-weight:600;color:var(--gw-ink)}
+.pc-stat-foot em{display:inline-flex;align-items:center;gap:2px;font-style:normal;font-weight:600;white-space:nowrap}
+.pc-stat-foot em.is-up{color:#16a34a}
+.pc-stat-foot em.is-down{color:#dc2626}
+html[data-host-theme="dark"] .pc-stat-foot em.is-up{color:#4ade80}
+html[data-host-theme="dark"] .pc-stat-foot em.is-down{color:#f87171}
+@media (max-width:1100px){.pc-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:560px){.pc-stats{grid-template-columns:1fr}.pc-stat-chart{width:72px;height:48px}}
 .pc-arch-bars{display:flex;flex-direction:column;gap:15px;padding:6px 0 4px}
 .pc-arch-row{display:flex;align-items:center;gap:12px;font-size:11px}
 .pc-arch-name{display:inline-flex;align-items:center;gap:6px;width:88px;flex:none}
@@ -1119,9 +1478,18 @@ const pcStyles = `
   .pc-search{min-width:100%}
   .pc-list-size{display:none}
   .pc-source-strong{font-size:15px !important}
+  .pc-friends{padding:14px 16px;gap:12px 16px}
+  .pc-friends-col{width:100%}
 }
-.pc-up-open{padding:7px 12px;font-size:11px !important;border-radius:8px;white-space:nowrap}
 .pc-tag-local{color:var(--gw-accent);background:var(--gw-income-surface);font-weight:600}
+.pc-tag-offline{color:#d9534f;background:rgba(217,83,79,.12);font-weight:600}
+.pc-card.is-offline{opacity:.7}
+.pc-card.is-offline .pc-icon{filter:grayscale(.6)}
+.pc-state-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;padding:9px 12px;border-radius:11px;background:var(--gw-goal-surface);border:1px solid var(--gw-line)}
+.pc-state{font-size:11.5px;color:var(--gw-muted);line-height:1.45}
+.pc-state.is-on{color:#2f9e6f}
+.pc-state.is-off{color:#d9534f}
+.pc-state-btn{padding:6px 12px;font-size:11px !important;border-radius:8px;white-space:nowrap}
 .pc-remove{margin-top:10px;width:100%;justify-content:center;color:#d9534f;border-color:rgba(217,83,79,.35) !important}
 .pc-up{width:min(520px,100%);border-radius:22px;padding:24px;background:var(--gw-popover);border:1px solid var(--gw-line)}
 .pc-up-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}

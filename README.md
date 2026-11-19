@@ -30,6 +30,8 @@
 - **SPK 工作室**：左侧第二个「打包」入口，浏览器本地生成 DSM 7 的 `.spk`（INFO / package.tgz / 64+256 图标 / MD5 checksum），无需后端，文件不上传
 - **上传套件**：右上角「上传」或列表右上角「上传套件」，拖入已打包好的 `.spk`，解析 INFO 与图标后**立刻**出现在列表与 DSM 来源中，无需重建镜像（见 4.5）
 - **自动扫描**：把打包目录只读挂载到 `/import`，新生成的 `.spk` 每隔 `GPC_SCAN_INTERVAL` 秒自动收录
+- **套件上下线**：详情弹窗一键「下线」，该套件立即从 DSM 套件来源清单移除（已安装的不受影响），页面仍保留并标注「已下线」，随时可一键恢复上线；状态存在 `data/state.json`，重启不丢
+- **套件图标**：DSM 套件中心列表直接显示真实图标——清单的 `thumbnail` 指向 `/api/icon/<包名>`，服务从 SPK 内的 `PACKAGE_ICON*.PNG` 提取并缓存，不再显示占位图
 - 响应式：桌面Dock导航 / 移动Rail导航，适配手机与平板
 
 ---
@@ -314,6 +316,7 @@ http://192.168.50.4:13801/dsm/synology-x86_64.json
 | `GPC_SCAN_INTERVAL` | `30` | 扫描间隔秒数，`0` 关闭定时扫描 |
 | `GPC_MAX_UPLOAD_MB` | `512` | 单包上传上限 |
 | `GPC_ADMIN_TOKEN` | 空 | 设置后，上传 / 删除 / 手动扫描需带上该令牌（页面会显示令牌输入框） |
+| `GPC_PUBLIC_URL` | 空（按请求头） | 清单里 `link`/`thumbnail` 的对外前缀，如 `http://192.168.50.4:13801`。**DSM 显示图标但点安装提示「下载失败」时，务必设为 DSM 实际可访问的地址** |
 
 **接口**（便于脚本化，不需要页面）
 
@@ -330,6 +333,17 @@ curl -X POST http://192.168.50.4:13801/api/scan
 
 # 删除本地上传的包
 curl -X DELETE http://192.168.50.4:13801/api/packages/my-package.spk
+
+# 下线（从 DSM 套件来源移除，页面保留）
+curl -X POST -H 'Content-Type: application/json' -d '{"online":false}' \
+  http://192.168.50.4:13801/api/packages/my-package.spk/status
+
+# 重新上线
+curl -X POST -H 'Content-Type: application/json' -d '{"online":true}' \
+  http://192.168.50.4:13801/api/packages/my-package.spk/status
+
+# 套件图标（DSM 清单 thumbnail 指向这里）
+curl -o icon.png http://192.168.50.4:13801/api/icon/my-package.spk
 ```
 
 ---

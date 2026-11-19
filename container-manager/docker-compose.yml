@@ -1,32 +1,71 @@
-# 玻璃套件中心 · 群晖 Container Manager 项目文件
-# 直接引用已发布的 GHCR 镜像：无需构建、无需登录、无需敲命令。
+# 玻璃套件中心 · Glass Package Center
+# 完整版 docker-compose.yml —— 群晖 DSM 7 Container Manager 与通用 docker compose 均适用
 #
-# 用法：
-#   1. 只下载本文件（docker-compose.yml），不必下载整个仓库
-#   2. 在 NAS 上新建项目目录，例如 /volume1/docker/gpc/，把本文件放进去
-#   3. Container Manager → 项目 → 新增 → 项目路径选该目录 → 完成
-#   4. 浏览器打开 http://<群晖IP>:8380/
+# 镜像：ghcr.io/weststreetboy/glass-package-center:latest（amd64 / arm64 双架构，公开免登录）
+# 形态：容器内跑一个 Python 标准库服务，既托管页面，又提供 SPK 上传、目录扫描、DSM 套件来源协议
 #
-# 端口冲突：把下面 "8380:80" 的左侧 8380 改成未占用端口，右侧 80 勿动。
-# 镜像：ghcr.io/weststreetboy/glass-package-center:latest（amd64 / arm64 双架构，公开）
+# ── 群晖 Container Manager 部署 ────────────────────────────────
+#   1. 项目目录：/volume6/docker/glass-package-center/
+#      把本文件存为 docker-compose.yml，并确保 data/ 子目录存在
+#   2. Container Manager → 项目 → 新增 → 项目路径选该目录 → 完成
+#   3. 浏览器打开 http://<群晖IP>:8380/
+#
+# ── 命令行部署 ────────────────────────────────────────────────
+#   cd /volume6/docker/glass-package-center && docker compose pull && docker compose up -d
+#
+# 注意：
+#   · ports 左侧 8380 可改成任意空闲端口；右侧 80 是容器内端口，改了要同步改 GPC_PORT
+#   · /data 必须挂载，上传的安装包与登记表都在这里，不挂载则容器重建后丢失
+#   · 首次启动请先 docker compose pull，否则可能用到本地旧镜像
 
 services:
   glass-package-center:
     image: ghcr.io/weststreetboy/glass-package-center:latest
     container_name: glass-package-center
     restart: unless-stopped
+
     ports:
+      # 宿主机端口:容器端口。端口冲突时只改左侧
       - "8380:80"
+
     environment:
-      - TZ=Asia/Shanghai
-      # 自动扫描间隔（秒）。0 表示只在启动时扫描一次
-      - GPC_SCAN_INTERVAL=30
-      # 可选：设置后上传 / 删除 / 手动扫描都要带令牌
-      # - GPC_ADMIN_TOKEN=换成你自己的口令
+      TZ: Asia/Shanghai
+      # 容器内监听端口，必须与 ports 右侧一致
+      GPC_PORT: "80"
+      # 持久化根目录，存放 packages/ 与 registry.json
+      GPC_DATA_DIR: /data
+      # 自动扫描目录，新放入的 .spk 会被收录；多个用 : 分隔
+      GPC_IMPORT_DIRS: /import
+      # 扫描间隔（秒），0 表示只在启动时扫一次
+      GPC_SCAN_INTERVAL: "30"
+      # 单次上传体积上限（MB）
+      GPC_MAX_UPLOAD_MB: "512"
+      # 管理口令：设置后上传 / 删除 / 手动扫描都需带上它；留空则不校验
+      GPC_ADMIN_TOKEN: ""
+      # DSM 取包地址：清单里 link/thumbnail 的前缀。DSM 若能显示图标但点安装提示「下载失败」，
+      # 把它设为 DSM 实际能访问的地址（这里是 NAS 本机直连），可绕开请求头 Host 拼错的问题
+      GPC_PUBLIC_URL: "http://192.168.50.4:13801"
+      # 调试日志：排障时改成 "1"
+      GPC_VERBOSE: ""
 
     volumes:
-      # 上传的安装包与登记表，必须持久化，否则重建容器会丢
-      - ./data:/data
-      # 可选：把 SPK 打包目录只读挂进来，新打的 .spk 会自动出现在套件中心，
-      #       DSM 套件来源里也能直接看到。按实际路径修改左侧。
-      # - /volume1/docker/spk-studio/builds:/import:ro
+      # 必需：上传的包与登记表持久化（用绝对路径，避免项目路径变化导致数据落到别处）
+      #      若项目目录固定在 /volume6/docker/glass-package-center，也可写成 ./data:/data
+      - /volume6/docker/glass-package-center/data:/data
+      # 可选：把 SPK 打包目录只读挂进来，新生成的包自动出现在套件中心与 DSM 来源里
+      #      左侧按实际路径改，例如 /volume6/docker/spk-studio/builds
+      # - /volume6/docker/spk-studio/builds:/import:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:$${GPC_PORT:-80}/api/health || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+    # 限制日志体积，避免长期运行写满系统盘
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -21,6 +21,8 @@
     GPC_SCAN_INTERVAL   扫描间隔秒数，默认 30；设为 0 关闭定时扫描
     GPC_MAX_UPLOAD_MB   单包上传上限，默认 512
     GPC_ADMIN_TOKEN     设置后，上传/删除/扫描需要携带该令牌
+    GPC_PUBLIC_URL      清单里 link/thumbnail 的对外地址，如 http://192.168.50.4:13801
+                        DSM 下载失败但图标正常时，设为 DSM 实际可访问的地址即可
 """
 
 from __future__ import annotations
@@ -44,10 +46,15 @@ WEBROOT = os.environ.get("GPC_WEBROOT") or os.path.join(PROJECT, "webroot")
 DATA_DIR = os.environ.get("GPC_DATA_DIR") or "/data"
 UPLOAD_DIR = os.path.join(DATA_DIR, "packages")
 REGISTRY_PATH = os.path.join(DATA_DIR, "registry.json")
+STATE_PATH = os.path.join(DATA_DIR, "state.json")
 CATALOG_PATH = os.path.join(WEBROOT, "catalog.json")
 BUILTIN_DIR = os.path.join(WEBROOT, "packages")
 
 PORT = int(os.environ.get("GPC_PORT") or 80)
+# 清单里 link/thumbnail 使用的对外地址。DSM 下载器会按 link 重新建立独立连接，
+# 若经反代或 DSM 带自定义 Host，按请求头拼出的地址可能与 DSM 实际可达地址不符。
+# 配置后（如 http://192.168.50.4:13801）清单地址固定，避免下载失败。
+PUBLIC_URL = (os.environ.get("GPC_PUBLIC_URL") or "").strip()
 ADMIN_TOKEN = (os.environ.get("GPC_ADMIN_TOKEN") or "").strip()
 MAX_UPLOAD_BYTES = int(float(os.environ.get("GPC_MAX_UPLOAD_MB") or 512) * 1024 * 1024)
 SCAN_INTERVAL = int(os.environ.get("GPC_SCAN_INTERVAL") or 30)
@@ -71,8 +78,9 @@ MAINTAINER = "weststreetboy"
 MAINTAINER_URL = "https://github.com/weststreetboy/glass-package-center"
 
 _lock = threading.RLock()
-_state: dict = {"builtin": [], "runtime": {}, "ready": False}
+_state: dict = {"builtin": [], "runtime": {}, "offline": set(), "ready": False}
 _md5_cache: dict = {}
+_icon_cache: dict = {}
 
 
 # --------------------------------------------------------------------------- #
@@ -180,6 +188,45 @@ def read_spk_meta(path: str) -> tuple[dict | None, str | None]:
         return None, None
 
 
+def spk_icon_bytes(entry: dict) -> bytes | None:
+    """套件图标 PNG 字节。内置条目直接用 catalog 里的 data URI，运行时条目从 SPK 内提取。
+
+    带进程内缓存：DSM 每次刷新来源都会逐个拉图标，反复解 20 MB 的 tar 不可接受。
+    """
+    data_uri = entry.get("icon") or ""
+    if data_uri.startswith("data:image/png;base64,"):
+        try:
+            return base64.b64decode(data_uri.split(",", 1)[1])
+        except Exception:  # noqa: BLE001
+            return None
+
+    path = entry.get("path") or ""
+    if not path or not os.path.isfile(path):
+        return None
+    cached = _icon_cache.get(path)
+    if cached is not None:
+        return cached or None
+
+    blob = None
+    try:
+        with tarfile.open(path) as tar:
+            cands = sorted(
+                (n for n in tar.getnames() if re.search(r"icon.*\.png$", n, re.I)),
+                key=lambda n: (0 if "256" in n.lower() else 1, n.lower()),
+            )
+            for n in cands:
+                data = tar.extractfile(n).read()
+                if data[:8] == b"\x89PNG\r\n\x1a\n":
+                    blob = data
+                    break
+    except Exception as exc:  # noqa: BLE001
+        log("图标提取失败", os.path.basename(path), exc)
+    if len(_icon_cache) > 256:
+        _icon_cache.clear()
+    _icon_cache[path] = blob or b""
+    return blob
+
+
 def build_entry(path: str, file_name: str, origin: str) -> dict:
     info, icon = read_spk_meta(path)
     if info is None:
@@ -263,6 +310,46 @@ def save_registry() -> None:
     os.replace(tmp, REGISTRY_PATH)
 
 
+def load_state() -> set:
+    """读取下线集合（按文件名）。文件缺失或损坏时视为全部在线。"""
+    if not os.path.isfile(STATE_PATH):
+        return set()
+    try:
+        with open(STATE_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return {str(x) for x in data.get("offline", []) if x}
+    except Exception as exc:  # noqa: BLE001
+        log("state.json 读取失败，忽略：", exc)
+        return set()
+
+
+def save_state() -> None:
+    with _lock:
+        items = sorted(_state["offline"])
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"version": 1, "offline": items}, fh, ensure_ascii=False, indent=1)
+    os.replace(tmp, STATE_PATH)
+
+
+def set_online(file_name: str, online: bool) -> bool:
+    """切换套件是否出现在 DSM 套件来源中；返回是否命中已知套件。
+
+    下线只影响 DSM 清单，页面仍保留条目并标注，方便随时恢复或自查。
+    """
+    if not any(e.get("file") == file_name for e in all_entries()):
+        return False
+    with _lock:
+        if online:
+            _state["offline"].discard(file_name)
+        else:
+            _state["offline"].add(file_name)
+    save_state()
+    log("状态切换", file_name, "上线" if online else "下线")
+    return True
+
+
 def version_key(v: str) -> tuple:
     return tuple(int(x) if x.isdigit() else 0 for x in re.split(r"[.\-_+]", v or ""))
 
@@ -294,7 +381,13 @@ def dedupe(entries: list[dict]) -> list[dict]:
 def all_entries() -> list[dict]:
     with _lock:
         merged = list(_state["builtin"]) + list(_state["runtime"].values())
-    return dedupe(merged)
+        offline = set(_state["offline"])
+    out = []
+    for e in dedupe(merged):
+        item = dict(e)
+        item["online"] = str(item.get("file")) not in offline
+        out.append(item)
+    return out
 
 
 def register(entry: dict) -> None:
@@ -310,14 +403,19 @@ def register(entry: dict) -> None:
                     except OSError:
                         pass
         _state["runtime"][entry["file"]] = entry
+    _icon_cache.pop(entry.get("path") or "", None)
     save_registry()
 
 
 def unregister(file_name: str) -> bool:
     with _lock:
         entry = _state["runtime"].pop(file_name, None)
+        was_offline = file_name in _state["offline"]
+        _state["offline"].discard(file_name)
     if not entry:
         return False
+    if was_offline:
+        save_state()
     save_registry()
     if entry.get("origin") == "upload":
         try:
@@ -385,6 +483,9 @@ def dsm_payload(arch: str, origin: str) -> dict:
         arch = "noarch" if arch == "noarch" else "x86_64"
     items = []
     for e in all_entries():
+        # 已下线的套件不出现在 DSM 套件来源里
+        if not e.get("online", True):
+            continue
         arches = e.get("arch") or ["noarch"]
         if arch == "noarch":
             if "noarch" not in arches:
@@ -406,7 +507,11 @@ def dsm_payload(arch: str, origin: str) -> dict:
                 "link": f"{origin}/packages/{urllib.parse.quote(e['file'])}",
                 "size": os.path.getsize(path),
                 "md5": md5_file(path),
-                "thumbnail": [],
+                # DSM 只认 thumbnail 里的 URL：留空会让套件中心列表显示默认占位图标
+                "thumbnail": [
+                    f"{origin}/api/icon/{urllib.parse.quote(e['file'])}?size=256",
+                    f"{origin}/api/icon/{urllib.parse.quote(e['file'])}?size=72",
+                ],
                 "snapshot": [],
                 "qinst": True,
                 "qstart": True,
@@ -457,6 +562,12 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": False, "error": message}, status)
 
     def _origin(self) -> str:
+        # 显式配置的对外地址优先级最高：DSM 按清单里的 link 取包，
+        # 一旦请求头里的 Host/Proto 与 DSM 实际可达地址不一致，就会出现
+        # 「图标能显示、下载失败」——因为图标与清单用同一 Host 拼接，
+        # 但 DSM 下载器对 link 会重新发起独立连接。
+        if PUBLIC_URL:
+            return PUBLIC_URL.rstrip("/")
         proto = (self.headers.get("X-Forwarded-Proto") or "http").split(",")[0].strip()
         host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "localhost").split(",")[0].strip()
         host = re.sub(r"[^0-9A-Za-z.\-:\[\]]", "", host) or "localhost"
@@ -484,10 +595,17 @@ class Handler(BaseHTTPRequestHandler):
         if rng:
             m = re.match(r"bytes=(\d*)-(\d*)", rng.strip())
             if m:
-                if m.group(1):
-                    start = int(m.group(1))
-                if m.group(2):
-                    end = int(m.group(2))
+                first, last = m.group(1), m.group(2)
+                if first:
+                    # bytes=N-   从 N 取到末尾；bytes=N-M 取指定区间
+                    start = int(first)
+                    if last:
+                        end = int(last)
+                elif last:
+                    # bytes=-N   取末尾 N 字节（此前误当作从头取 N，导致段错乱）
+                    start = max(size - int(last), 0)
+                    end = size - 1
+                start = min(start, size - 1)
                 end = min(end, size - 1)
                 if start > end:
                     self.send_response(416)
@@ -574,6 +692,24 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "packages": len(all_entries()), "data": DATA_DIR})
             return
 
+        # 套件图标：DSM 套件中心按清单里的 thumbnail URL 拉取
+        if path.startswith("/api/icon/"):
+            name = os.path.basename(path)
+            entry = next((e for e in all_entries() if e.get("file") == name), None)
+            blob = spk_icon_bytes(entry) if entry else None
+            if not blob:
+                self._error(404, "没有图标")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(blob)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(blob)
+            return
+
         if path.startswith("/api/packages/"):
             self._error(405, "请使用 DELETE 删除")
             return
@@ -588,6 +724,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/packages/"):
             name = os.path.basename(path)
+            # 下载请求始终记一行，便于判断 DSM 是否真的回连、带了什么 Range。
+            log("下载请求", self.command, name, "Range=", self.headers.get("Range"),
+                "UA=", (self.headers.get("User-Agent") or "")[:80])
             entry = next((e for e in all_entries() if e.get("file") == name), None)
             if entry and os.path.isfile(entry.get("path") or ""):
                 self._serve_file(entry["path"], "application/octet-stream", download=True)
@@ -632,6 +771,34 @@ class Handler(BaseHTTPRequestHandler):
             added = scan_imports()
             self._json({"ok": True, "added": [{"file": e["file"], "name": e["name"]} for e in added]})
             return
+
+        # 上线 / 下线：下线后不再出现在 DSM 套件来源清单里
+        m = re.match(r"^/api/packages/(.+)/status$", path)
+        if m:
+            if not self._authorized():
+                self._error(403, "令牌无效")
+                return
+            file_name = os.path.basename(urllib.parse.unquote(m.group(1)))
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except Exception:  # noqa: BLE001
+                self._error(400, "请求体不是合法 JSON")
+                return
+            online = payload.get("online")
+            if not isinstance(online, bool):
+                self._error(400, "需要 online 布尔值")
+                return
+            if set_online(file_name, online):
+                self._json({"ok": True, "file": file_name, "online": online})
+            else:
+                self._error(404, "套件不存在")
+            return
+
         self._error(404, "接口不存在")
 
     def do_DELETE(self) -> None:  # noqa: N802
@@ -727,6 +894,7 @@ def main() -> int:
     with _lock:
         _state["builtin"] = load_catalog()
         _state["runtime"] = load_registry()
+        _state["offline"] = load_state()
         _state["ready"] = True
 
     # 清理指向已不存在文件的运行时条目
