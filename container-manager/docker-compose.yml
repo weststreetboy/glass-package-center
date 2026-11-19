@@ -45,6 +45,10 @@ services:
       # DSM 取包地址：清单里 link/thumbnail 的前缀。DSM 若能显示图标但点安装提示「下载失败」，
       # 把它设为 DSM 实际能访问的地址（这里是 NAS 本机直连），可绕开请求头 Host 拼错的问题
       GPC_PUBLIC_URL: "http://192.168.50.4:13801"
+      # 只覆盖「下载地址」：DSM 下载器在 NAS 本机建连接，填 127.0.0.1:端口 可直连容器；
+      # 图标由浏览器加载，仍用上面的 GPC_PUBLIC_URL。留空则下载地址与 GPC_PUBLIC_URL 相同
+      # 注意：不要把 GPC_PUBLIC_URL 本身改成 127.0.0.1，否则套件中心图标会裂
+      GPC_DOWNLOAD_URL: ""
       # 调试日志：排障时改成 "1"
       GPC_VERBOSE: ""
 

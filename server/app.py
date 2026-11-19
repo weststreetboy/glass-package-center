@@ -23,6 +23,9 @@
     GPC_ADMIN_TOKEN     设置后，上传/删除/扫描需要携带该令牌
     GPC_PUBLIC_URL      清单里 link/thumbnail 的对外地址，如 http://192.168.50.4:13801
                         DSM 下载失败但图标正常时，设为 DSM 实际可访问的地址即可
+    GPC_DOWNLOAD_URL    只覆盖清单里的下载地址（link），留空则与 GPC_PUBLIC_URL 相同。
+                        DSM 下载器在 NAS 本机发起请求，可填 http://127.0.0.1:13801 直连容器；
+                        图标由浏览器加载，仍走 GPC_PUBLIC_URL，两者因此需要能分开配置
 """
 
 from __future__ import annotations
@@ -56,6 +59,9 @@ PORT = int(os.environ.get("GPC_PORT") or 80)
 # 若经反代或 DSM 带自定义 Host，按请求头拼出的地址可能与 DSM 实际可达地址不符。
 # 配置后（如 http://192.168.50.4:13801）清单地址固定，避免下载失败。
 PUBLIC_URL = (os.environ.get("GPC_PUBLIC_URL") or "").strip()
+# 只覆盖下载地址。DSM 的下载器在 NAS 本机起连接，可以走 127.0.0.1 直连发布到宿主机的端口；
+# 而 thumbnail 是浏览器加载的，必须用局域网地址。两者分开配置才不会出现「图标裂了」。
+DOWNLOAD_URL = (os.environ.get("GPC_DOWNLOAD_URL") or "").strip()
 ADMIN_TOKEN = (os.environ.get("GPC_ADMIN_TOKEN") or "").strip()
 MAX_UPLOAD_BYTES = int(float(os.environ.get("GPC_MAX_UPLOAD_MB") or 2048) * 1024 * 1024)
 CHUNK_BYTES = 8 * 1024 * 1024
@@ -511,10 +517,12 @@ def scan_loop() -> None:
 # --------------------------------------------------------------------------- #
 # DSM 清单
 # --------------------------------------------------------------------------- #
-def dsm_payload(arch: str, origin: str) -> dict:
+def dsm_payload(arch: str, origin: str, download_origin: str = "") -> dict:
     arch = (arch or "x86_64").lower()
     if arch not in ("x86_64", "armv8"):
         arch = "noarch" if arch == "noarch" else "x86_64"
+    # origin 用于 thumbnail（浏览器加载），download_origin 用于 link（DSM 本机下载）
+    dl = (download_origin or origin).rstrip("/")
     items = []
     for e in all_entries():
         # 已下线的套件不出现在 DSM 套件来源里
@@ -543,7 +551,7 @@ def dsm_payload(arch: str, origin: str) -> dict:
                 "desc": e.get("desc") or "",
                 "download_count": 2026,
                 "recent_download_count": 0,
-                "link": f"{origin}/packages/{fingerprint}/{urllib.parse.quote(file_name)}",
+                "link": f"{dl}/packages/{fingerprint}/{urllib.parse.quote(file_name)}",
                 "size": os.path.getsize(path),
                 "md5": md5_file(path),
                 # DSM 只认 thumbnail 里的 URL：留空会让套件中心列表显示默认占位图标
@@ -600,6 +608,9 @@ class Handler(BaseHTTPRequestHandler):
         host = re.sub(r"[^0-9A-Za-z.\-:\[\]]", "", host) or "localhost"
         return f"{proto}://{host}"
 
+    def _download_origin(self) -> str:
+        return (DOWNLOAD_URL.rstrip("/") if DOWNLOAD_URL else self._origin())
+
     def _authorized(self) -> bool:
         if not ADMIN_TOKEN:
             return True
@@ -650,7 +661,15 @@ class Handler(BaseHTTPRequestHandler):
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         if download:
-            self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(path)}"')
+            # 响应头只能是 latin-1：文件名含中文时直接 encode 会抛 UnicodeEncodeError，
+            # 连接被重置，DSM 侧表现就是「下载失败」。按 RFC 5987 用 filename* 传 UTF-8。
+            raw_name = os.path.basename(path)
+            ascii_name = raw_name.encode("ascii", "ignore").decode() or "package.spk"
+            quoted = urllib.parse.quote(raw_name)
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quoted}',
+            )
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         if self.command == "HEAD":
@@ -702,7 +721,7 @@ class Handler(BaseHTTPRequestHandler):
         # DSM 套件来源握手
         if unique.startswith("synology_"):
             arch = (query.get("arch") or ["x86_64"])[0]
-            self._json(dsm_payload(arch, self._origin()))
+            self._json(dsm_payload(arch, self._origin(), self._download_origin()))
             return
 
         if path in ("/", "/index.html"):
@@ -761,7 +780,7 @@ class Handler(BaseHTTPRequestHandler):
             if not m:
                 self._error(404, "清单不存在")
                 return
-            self._json(dsm_payload(m.group(1), self._origin()))
+            self._json(dsm_payload(m.group(1), self._origin(), self._download_origin()))
             return
 
         if path.startswith("/packages/"):
@@ -819,7 +838,7 @@ class Handler(BaseHTTPRequestHandler):
                 "UA=", (self.headers.get("User-Agent") or "")[:60])
             m = re.match(r"^/dsm/synology-([a-z0-9_]+)\.json$", path)
             arch = m.group(1) if m else (query.get("arch") or ["x86_64"])[0]
-            self._json(dsm_payload(arch, self._origin()))
+            self._json(dsm_payload(arch, self._origin(), self._download_origin()))
             return
 
         if path == "/api/upload":

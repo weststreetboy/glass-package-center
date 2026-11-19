@@ -1,0 +1,61 @@
+# 玻璃套件中心 · Glass Package Center
+# 群晖 DSM 7 Container Manager 粘贴版（宿主机端口 13801）
+#
+# 与仓库里的 docker-compose.yml 相比只改了三处：
+#   1. ports 左侧改成 13801（与 NAS 上现有映射一致）
+#   2. GPC_PUBLIC_URL 保持局域网地址 —— 图标由浏览器加载，必须是 NAS 的局域网 IP
+#   3. 新增 GPC_DOWNLOAD_URL=http://127.0.0.1:13801 —— 只影响清单里的下载地址，
+#      DSM 的下载器在 NAS 本机发起请求，走回环直连容器端口，避开 Host/DNS/IPv6 干扰
+#
+# 注意：整份文件的缩进不能丢。Container Manager 里 YAML 若所有键都顶格（没有 2 空格缩进），
+#       会直接报格式错误，或被解析成空配置。
+services:
+  glass-package-center:
+    image: ghcr.io/weststreetboy/glass-package-center:latest
+    container_name: glass-package-center
+    restart: unless-stopped
+
+    ports:
+      # 宿主机端口:容器端口。端口冲突时只改左侧，并同步改 GPC_DOWNLOAD_URL
+      - "13801:80"
+
+    environment:
+      TZ: Asia/Shanghai
+      # 容器内监听端口，必须与 ports 右侧一致
+      GPC_PORT: "80"
+      # 持久化根目录，存放 packages/ 与 registry.json
+      GPC_DATA_DIR: /data
+      # 自动扫描目录，新放入的 .spk 会被收录；多个用 : 分隔
+      GPC_IMPORT_DIRS: /import
+      # 扫描间隔（秒），0 表示只在启动时扫一次
+      GPC_SCAN_INTERVAL: "30"
+      # 单包上传上限（MB）；页面按 8 MB 分片上传
+      GPC_MAX_UPLOAD_MB: "2048"
+      # 管理口令：设置后上传 / 删除 / 手动扫描都需带上它；留空则不校验
+      GPC_ADMIN_TOKEN: ""
+      # 图标/清单前缀：浏览器加载图标用，必须是 NAS 的局域网地址
+      GPC_PUBLIC_URL: "http://192.168.50.4:13801"
+      # 下载地址前缀：DSM 下载器在 NAS 本机取包，走回环直连容器
+      # 若端口改了，这里要一起改；留空则与 GPC_PUBLIC_URL 相同
+      GPC_DOWNLOAD_URL: "http://127.0.0.1:13801"
+      # 调试日志：排障时改成 "1"
+      GPC_VERBOSE: ""
+
+    volumes:
+      # 必需：上传的包与登记表持久化
+      - /volume6/docker/glass-package-center/data:/data
+      # 可选：SPK 打包目录只读挂载，新生成的包自动收录
+      # - /volume6/docker/spk-studio/builds:/import:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:$${GPC_PORT:-80}/api/health || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
