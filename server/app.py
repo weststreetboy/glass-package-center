@@ -83,6 +83,7 @@ MAINTAINER_URL = "https://github.com/weststreetboy/glass-package-center"
 _lock = threading.RLock()
 _state: dict = {"builtin": [], "runtime": {}, "offline": set(), "ready": False}
 _md5_cache: dict = {}
+_sha256_cache: dict = {}
 _icon_cache: dict = {}
 
 
@@ -126,6 +127,26 @@ def md5_file(path: str) -> str:
             h.update(chunk)
     digest = h.hexdigest()
     _md5_cache[key] = digest
+    return digest
+
+
+def _sha256_file(path: str) -> str:
+    """下载链接里的内容指纹，做法与 release.66666.host 等可用源一致：
+    指纹放进路径段，URL 仍以 .spk 结尾（DSM 对下载地址做后缀校验）。"""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return ""
+    key = (path, st.st_size, int(st.st_mtime))
+    cached = _sha256_cache.get(key)
+    if cached:
+        return cached
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    digest = h.hexdigest()
+    _sha256_cache[key] = digest
     return digest
 
 
@@ -508,49 +529,34 @@ def dsm_payload(arch: str, origin: str) -> dict:
         path = e.get("path") or os.path.join(BUILTIN_DIR, e["file"])
         if not os.path.isfile(path):
             continue
-        # 把内容校验值拼进 link 的查询串：DSM 会按完整 URL 缓存已下载的包，
-        # 反复重打包同一文件名时，仅 md5 变化会让 DSM 仍拿旧缓存去校验而报
-        # 「下载失败」。URL 带内容指纹后，包一变 URL 就变，强制重新下载。
-        fingerprint = md5_file(path)[:12]
+        # 内容指纹放进「路径段」而不是查询串：DSM 对下载地址会做后缀判断，
+        # 以 ?v=... 结尾时会被判成非 .spk 而在本地直接失败（不发任何请求）。
+        # 参考可用源 release.66666.host 的做法：/packages/<sha256>/<文件名>.spk
+        fingerprint = _sha256_file(path) or md5_file(path)
+        file_name = os.path.basename(e["file"])
+        icon = f"{origin}/api/icon/{urllib.parse.quote(file_name)}?size=256"
         items.append(
             {
                 "package": e.get("en") or e.get("id"),
                 "version": e.get("v") or "1.0.0",
                 "dname": e.get("name") or e.get("en"),
                 "desc": e.get("desc") or "",
-                "price": 0,
                 "download_count": 2026,
                 "recent_download_count": 0,
-                "link": f"{origin}/packages/{urllib.parse.quote(e['file'])}?v={fingerprint}",
+                "link": f"{origin}/packages/{fingerprint}/{urllib.parse.quote(file_name)}",
                 "size": os.path.getsize(path),
                 "md5": md5_file(path),
                 # DSM 只认 thumbnail 里的 URL：留空会让套件中心列表显示默认占位图标
-                "thumbnail": [
-                    f"{origin}/api/icon/{urllib.parse.quote(e['file'])}?size=256",
-                    f"{origin}/api/icon/{urllib.parse.quote(e['file'])}?size=72",
-                ],
+                "thumbnail": [icon, icon],
+                "thumbnail_retina": [icon, icon],
                 "snapshot": [],
-                "qinst": True,
-                "qstart": True,
+                # 与参考源保持一致：不做静默安装/启动，避免 DSM 走自动化分支
+                "qinst": False,
+                "qstart": False,
                 "qupgrade": True,
-                "depsers": None,
-                "deppkgs": None,
-                "conflictpkgs": None,
-                "start": True,
+                "startable": "yes",
                 "maintainer": MAINTAINER,
                 "maintainer_url": MAINTAINER_URL,
-                "distributor": MAINTAINER,
-                "distributor_url": MAINTAINER_URL,
-                "support_url": MAINTAINER_URL + "/issues",
-                "changelog": e.get("long") or e.get("desc") or "",
-                "thirdparty": True,
-                "category": 0,
-                "subcategory": 0,
-                "type": 0,
-                "silent_install": False,
-                "silent_uninstall": False,
-                "silent_upgrade": False,
-                "auto_upgrade_from": None,
             }
         )
     return {"packages": items}
