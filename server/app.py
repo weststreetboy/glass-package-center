@@ -498,6 +498,10 @@ def dsm_payload(arch: str, origin: str) -> dict:
         path = e.get("path") or os.path.join(BUILTIN_DIR, e["file"])
         if not os.path.isfile(path):
             continue
+        # 把内容校验值拼进 link 的查询串：DSM 会按完整 URL 缓存已下载的包，
+        # 反复重打包同一文件名时，仅 md5 变化会让 DSM 仍拿旧缓存去校验而报
+        # 「下载失败」。URL 带内容指纹后，包一变 URL 就变，强制重新下载。
+        fingerprint = md5_file(path)[:12]
         items.append(
             {
                 "package": e.get("en") or e.get("id"),
@@ -507,7 +511,7 @@ def dsm_payload(arch: str, origin: str) -> dict:
                 "price": 0,
                 "download_count": 2026,
                 "recent_download_count": 0,
-                "link": f"{origin}/packages/{urllib.parse.quote(e['file'])}",
+                "link": f"{origin}/packages/{urllib.parse.quote(e['file'])}?v={fingerprint}",
                 "size": os.path.getsize(path),
                 "md5": md5_file(path),
                 # DSM 只认 thumbnail 里的 URL：留空会让套件中心列表显示默认占位图标
