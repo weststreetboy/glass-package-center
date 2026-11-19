@@ -782,6 +782,20 @@ class Handler(BaseHTTPRequestHandler):
             self._json(dsm_payload(arch, self._origin(), self._download_origin()))
             return
 
+        # 部分 DSM 版本按 sspks 约定用 /packages?arch=… 拉索引（而不是 ?unique=）。
+        # 这条路径必须回 JSON：一旦落到下面的 SPA 首页，DSM 解析不出 link/md5，
+        # 列表能显示、点安装立刻「下载失败」，且服务端看起来「没收到任何请求」。
+        if path in ("/packages", "/packages/"):
+            arch = (query.get("arch") or ["x86_64"])[0]
+            self._json(dsm_payload(arch.strip() or "x86_64", self._origin(), self._download_origin()))
+            return
+
+        # sspks 风格清单：/synology_x86_64.json（不带 /dsm/ 前缀）
+        m = re.match(r"^/synology_([a-z0-9_]+)\.json$", path)
+        if m:
+            self._json(dsm_payload(m.group(1), self._origin(), self._download_origin()))
+            return
+
         if path in ("/", "/index.html"):
             self._serve_index()
             return
@@ -834,7 +848,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path.startswith("/dsm/"):
-            m = re.match(r"/dsm/synology-([a-z0-9_]+)\.json$", path)
+            m = re.match(r"/dsm/synology[_-]([a-z0-9_]+)\.json$", path)
             if not m:
                 self._error(404, "清单不存在")
                 return
@@ -894,7 +908,7 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             log("请求", "POST", path or "/",
                 "UA=", (self.headers.get("User-Agent") or "")[:60])
-            m = re.match(r"^/dsm/synology-([a-z0-9_]+)\.json$", path)
+            m = re.match(r"^/dsm/synology[_-]([a-z0-9_]+)\.json$", path)
             arch = m.group(1) if m else (query.get("arch") or ["x86_64"])[0]
             self._json(dsm_payload(arch, self._origin(), self._download_origin()))
             return
