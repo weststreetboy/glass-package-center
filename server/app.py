@@ -93,6 +93,16 @@ def log(*args) -> None:
     print("[gpc]", *args, flush=True)
 
 
+def _is_dsm_ua(ua: str) -> bool:
+    """判断请求是否来自 DSM 套件中心 / synopkg。
+
+    DSM 拉清单用的 UA 里带 Synology / PackageCenter / synopkg，
+    用它区分浏览器访问，避免把探活请求回成首页 HTML。
+    """
+    low = (ua or "").lower()
+    return any(k in low for k in ("synology", "packagecenter", "synopkg"))
+
+
 def human_size(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024:
@@ -670,6 +680,19 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         unique = (query.get("unique") or [""])[0]
 
+        # 清单/接口请求一律记日志：DSM 的「查询套件列表」也走这里，
+        # 之前只记录 /packages/ 下载，导致无法判断 DSM 有没有拉起清单。
+        if path == "/" or path.startswith(("/api/", "/packages/", "/dsm/")):
+            qs = f"?{parsed.query[:160]}" if parsed.query else ""
+            log("请求", self.command, f"{path}{qs}",
+                "UA=", (self.headers.get("User-Agent") or "")[:60])
+
+        # 有些 DSM 版本会先拿基础地址探活（不带 unique 参数），若这时回首页 HTML
+        # 会被判成「来源无效」；UA 像套件中心时一律回清单。
+        if (not unique and path in ("/", "/index.html")
+                and _is_dsm_ua(self.headers.get("User-Agent") or "")):
+            unique = "synology_probe"
+
         # DSM 套件来源握手
         if unique.startswith("synology_"):
             arch = (query.get("arch") or ["x86_64"])[0]
@@ -773,6 +796,25 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
+
+        # 少数 DSM 版本会用 POST 查来源清单。这类请求也要回 JSON，
+        # 否则套件中心拿不到列表，点安装会瞬间失败且不发起下载。
+        if path in ("/", "/index.html") or path.startswith("/dsm/"):
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if 0 < length <= 65536:
+                try:
+                    self.rfile.read(length)
+                except OSError:
+                    pass
+            log("请求", "POST", path or "/",
+                "UA=", (self.headers.get("User-Agent") or "")[:60])
+            m = re.match(r"^/dsm/synology-([a-z0-9_]+)\.json$", path)
+            arch = m.group(1) if m else (query.get("arch") or ["x86_64"])[0]
+            self._json(dsm_payload(arch, self._origin()))
+            return
 
         if path == "/api/upload":
             self._handle_upload(query)
