@@ -49,6 +49,10 @@ services:
       # 图标由浏览器加载，仍用上面的 GPC_PUBLIC_URL。留空则下载地址与 GPC_PUBLIC_URL 相同
       # 注意：不要把 GPC_PUBLIC_URL 本身改成 127.0.0.1，否则套件中心图标会裂
       GPC_DOWNLOAD_URL: ""
+      # 下载地址是否带内容指纹（/packages/<sha256>/<文件名>.spk）。
+      # 默认关闭，与已验证可用的 sspks-imnks 一致用 /packages/<文件名>.spk；
+      # 仅当同名包重打包后需要绕过 DSM 按 URL 缓存时才设为 "1"
+      # GPC_LINK_FINGERPRINT: "1"
       # 调试日志：排障时改成 "1"
       GPC_VERBOSE: ""
 

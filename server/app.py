@@ -26,6 +26,9 @@
     GPC_DOWNLOAD_URL    只覆盖清单里的下载地址（link），留空则与 GPC_PUBLIC_URL 相同。
                         DSM 下载器在 NAS 本机发起请求，可填 http://127.0.0.1:13801 直连容器；
                         图标由浏览器加载，仍走 GPC_PUBLIC_URL，两者因此需要能分开配置
+    GPC_LINK_FINGERPRINT
+                        设为 1 时下载地址带内容指纹（/packages/<sha256>/<文件名>.spk），
+                        默认关闭：与 sspks-imnks 一致用 /packages/<文件名>.spk
 """
 
 from __future__ import annotations
@@ -62,6 +65,9 @@ PUBLIC_URL = (os.environ.get("GPC_PUBLIC_URL") or "").strip()
 # 只覆盖下载地址。DSM 的下载器在 NAS 本机起连接，可以走 127.0.0.1 直连发布到宿主机的端口；
 # 而 thumbnail 是浏览器加载的，必须用局域网地址。两者分开配置才不会出现「图标裂了」。
 DOWNLOAD_URL = (os.environ.get("GPC_DOWNLOAD_URL") or "").strip()
+# 下载地址是否带内容指纹。默认关闭，与 sspks-imnks 保持完全一致的
+# /packages/<文件名>.spk 形态；重打包同名包需要绕过 DSM 的按 URL 缓存时再打开。
+LINK_FINGERPRINT = (os.environ.get("GPC_LINK_FINGERPRINT") or "").strip().lower() in ("1", "true", "yes", "on")
 ADMIN_TOKEN = (os.environ.get("GPC_ADMIN_TOKEN") or "").strip()
 MAX_UPLOAD_BYTES = int(float(os.environ.get("GPC_MAX_UPLOAD_MB") or 2048) * 1024 * 1024)
 CHUNK_BYTES = 8 * 1024 * 1024
@@ -92,6 +98,7 @@ _md5_cache: dict = {}
 _sha256_cache: dict = {}
 _icon_cache: dict = {}
 _info_cache: dict = {}
+_wizard_cache: dict = {}
 
 
 # --------------------------------------------------------------------------- #
@@ -286,6 +293,40 @@ def spk_info(path: str) -> dict:
     if len(_info_cache) > 256:
         _info_cache.clear()
     return _info_cache[key]
+
+
+def _truthy(value, default: bool) -> bool:
+    """INFO 里的布尔字段：yes/true/1/on 为真，空值用默认值（对应 sspks 的 parseBool）。"""
+    v = str(value or "").strip().lower()
+    if not v:
+        return default
+    return v in ("yes", "true", "1", "on")
+
+
+def spk_has_wizard(path: str) -> bool:
+    """SPK 里是否有 WIZARD_UIFILES 目录（对应 sspks 的 hasWizardDir）。
+
+    qinst / qstart / qupgrade 的语义就来自这里：没有安装向导的包应当为 true，
+    表示可以「快速安装」。此前一律写死 false，等于告诉套件中心「这个包需要向导」，
+    点安装后去找向导却找不到，于是立刻失败，连下载请求都不会发出。
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    key = (path, st.st_size, int(st.st_mtime))
+    if key in _wizard_cache:
+        return _wizard_cache[key]
+    has = False
+    try:
+        with tarfile.open(path) as tar:
+            has = any(n.split("/", 1)[0] == "WIZARD_UIFILES" for n in tar.getnames())
+    except Exception as exc:  # noqa: BLE001 - 上传的文件可能是任意内容
+        log("向导目录检测失败", os.path.basename(path), exc)
+    if len(_wizard_cache) > 256:
+        _wizard_cache.clear()
+    _wizard_cache[key] = has
+    return has
 
 
 def guess_version(file_name: str) -> str:
@@ -575,56 +616,76 @@ def dsm_payload(arch: str, origin: str, download_origin: str = "") -> dict:
         path = e.get("path") or os.path.join(BUILTIN_DIR, e["file"])
         if not os.path.isfile(path):
             continue
-        # 内容指纹放进「路径段」而不是查询串：DSM 对下载地址会做后缀判断，
-        # 以 ?v=... 结尾时会被判成非 .spk 而在本地直接失败（不发任何请求）。
-        # 参考可用源 release.66666.host 的做法：/packages/<sha256>/<文件名>.spk
-        fingerprint = _sha256_file(path) or md5_file(path)
+        # 文件指纹只在开启 LINK_FINGERPRINT 时用于拼下载地址（见该常量注释）
+        fingerprint = (_sha256_file(path) or md5_file(path)) if LINK_FINGERPRINT else ""
         file_name = os.path.basename(e["file"])
         quoted_name = urllib.parse.quote(file_name)
         icon_base = f"{origin}/api/icon/{quoted_name}"
-        # 老登记表可能缺这些字段：回读一次 SPK 的 INFO 补齐，
-        # 否则 DSM 详情页的「开发者 / 发布人员 / 最新在线版本」会是写死的值或空白。
-        info = {} if (e.get("maintainer") and e.get("v") and e.get("name")) else spk_info(path)
+        # 清单里的版本/名称/发布者一律取 SPK 自己的 INFO（带缓存），
+        # 否则详情页的「开发者 / 发布人员 / 最新在线版本」会是写死值或空白。
+        info = spk_info(path)
         version = (e.get("v") or info.get("version") or guess_version(file_name) or "1.0.0").strip()
         dname = (e.get("name") or info.get("displayname") or e.get("en") or e.get("id") or file_name).strip()
+        desc = (e.get("desc") or info.get("description") or "").strip()
         maint = (e.get("maintainer") or info.get("maintainer") or MAINTAINER).strip()
         murl = (e.get("maintainerUrl") or info.get("maintainer_url") or MAINTAINER_URL).strip()
         # 发布人员：DSM 详情页单独一行，取自 SPK 的 distributor；缺省回落到维护者
         dist = (e.get("distributor") or info.get("distributor") or maint).strip()
         durl = (e.get("distributorUrl") or info.get("distributor_url") or murl).strip()
-        deps = (e.get("deps") or info.get("dependencies") or "").strip()
-        changelog = (e.get("changelog") or info.get("changelog") or e.get("long") or e.get("desc") or "").strip()
-        item = {
-            "package": e.get("en") or e.get("id"),
-            "version": version,
-            "dname": dname,
-            "desc": e.get("desc") or info.get("description") or "",
-            "download_count": 2026,
-            "recent_download_count": 0,
-            "link": f"{dl}/packages/{fingerprint}/{quoted_name}",
-            "size": os.path.getsize(path),
-            "md5": md5_file(path),
-            # DSM 只认 thumbnail 里的 URL：留空会让套件中心列表显示默认占位图标。
-            # 顺序与 SynoCommunity 一致：[0]=72px 列表用，[1]=256px，retina 再给 256。
-            "thumbnail": [f"{icon_base}?size=72", f"{icon_base}?size=256"],
-            "thumbnail_retina": [f"{icon_base}?size=256", f"{icon_base}?size=256"],
-            "snapshot": [],
-            # 与参考源保持一致：不做静默安装/启动，避免 DSM 走自动化分支
-            "qinst": False,
-            "qstart": False,
-            "qupgrade": True,
-            "startable": "yes",
-            "maintainer": maint,
-            "maintainer_url": murl,
-            "distributor": dist,
-            "distributor_url": durl,
-            "changelog": changelog,
-        }
-        # 空值不写进清单，否则详情页会多出空的「从属套件 / 冲突套件」行
-        if deps:
-            item["deppkgs"] = deps
-            item["conflictpkgs"] = ""
-        items.append(item)
+        deps = (e.get("deps") or info.get("install_dep_packages") or info.get("dependencies") or "").strip()
+        changelog = (e.get("changelog") or info.get("changelog") or e.get("long") or desc or "").strip()
+        # 与 sspks-imnks 一致：没有 WIZARD_UIFILES 的包默认 qinst/qstart/qupgrade=true，
+        # 套件中心直接走「安装」；INFO 里显式写了的以 INFO 为准。
+        quick = not spk_has_wizard(path)
+        link = (
+            f"{dl}/packages/{fingerprint}/{quoted_name}"
+            if LINK_FINGERPRINT
+            else f"{dl}/packages/{quoted_name}"
+        )
+        items.append(
+            {
+                "package": e.get("en") or e.get("id"),
+                "version": version,
+                "dname": dname,
+                "desc": desc,
+                # 以下字段名与取值语义逐项对齐 sspks-imnks 的 JsonOutput：
+                # 少字段时 DSM 仍可能列出套件，但点击安装会在本地校验阶段直接失败。
+                "price": 0,
+                "download_count": 2026,
+                "recent_download_count": 0,
+                "link": link,
+                "size": os.path.getsize(path),
+                "md5": md5_file(path),
+                # DSM 只认 thumbnail 里的 URL：留空会让套件中心列表显示默认占位图标。
+                # [0]=72px 列表用，[1]=256px，retina 再给 256。
+                "thumbnail": [f"{icon_base}?size=72", f"{icon_base}?size=256"],
+                "thumbnail_retina": [f"{icon_base}?size=256", f"{icon_base}?size=256"],
+                "snapshot": [],
+                "qinst": _truthy(info.get("qinst"), quick),
+                "qstart": _truthy(info.get("qstart"), quick),
+                "qupgrade": _truthy(info.get("qupgrade"), quick),
+                "depsers": (info.get("start_dep_services") or "").strip() or None,
+                "deppkgs": deps or None,
+                "conflictpkgs": (info.get("install_conflict_packages") or "").strip() or None,
+                # DSM 7 用布尔 start（DSM 6 的 startable 已不再使用）
+                "start": True,
+                "maintainer": maint,
+                "maintainer_url": murl,
+                "distributor": dist,
+                "distributor_url": durl,
+                "support_url": (info.get("support_url") or "").strip() or None,
+                "changelog": changelog,
+                # 第三方源标记：DSM 会据此显示「此套件由第三方提供」并允许安装未签名包
+                "thirdparty": True,
+                "category": 0,
+                "subcategory": 0,
+                "type": 0,
+                "silent_install": _truthy(info.get("silent_install"), False),
+                "silent_uninstall": _truthy(info.get("silent_uninstall"), False),
+                "silent_upgrade": _truthy(info.get("silent_upgrade"), False),
+                "auto_upgrade_from": (info.get("auto_upgrade_from") or "").strip() or None,
+            }
+        )
     return {"packages": items}
 
 
@@ -718,7 +779,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        if download:
+        # DSM 下载器不需要 Content-Disposition（sspks 由 nginx 直接吐静态文件，
+        # 也没有这个头）。浏览器下载才加，中文名仍按 RFC 5987 用 filename* 传。
+        ua = self.headers.get("User-Agent") or ""
+        if download and not _is_dsm_ua(ua):
             # 响应头只能是 latin-1：文件名含中文时直接 encode 会抛 UnicodeEncodeError，
             # 连接被重置，DSM 侧表现就是「下载失败」。按 RFC 5987 用 filename* 传 UTF-8。
             raw_name = os.path.basename(path)

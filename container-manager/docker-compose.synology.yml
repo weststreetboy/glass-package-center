@@ -38,6 +38,9 @@ services:
       # 下载地址前缀：DSM 下载器在 NAS 本机取包，走回环直连容器
       # 若端口改了，这里要一起改；留空则与 GPC_PUBLIC_URL 相同
       GPC_DOWNLOAD_URL: "http://127.0.0.1:13801"
+      # 下载地址是否带内容指纹（/packages/<sha256>/<文件名>.spk）。
+      # 默认关闭，与已验证可用的 sspks-imnks 一致；同名包重打包需绕过缓存时才设为 "1"
+      # GPC_LINK_FINGERPRINT: "1"
       # 调试日志：排障时改成 "1"
       GPC_VERBOSE: ""
 
