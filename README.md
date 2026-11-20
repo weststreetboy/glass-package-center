@@ -317,9 +317,7 @@ http://192.168.50.4:13801/dsm/synology-x86_64.json
 | `GPC_SCAN_INTERVAL` | `30` | 扫描间隔秒数，`0` 关闭定时扫描 |
 | `GPC_MAX_UPLOAD_MB` | `2048` | 单包上传上限（页面自动分片，脚本直传也受此限制） |
 | `GPC_ADMIN_TOKEN` | 空 | 设置后，上传 / 删除 / 手动扫描需带上该令牌（页面会显示令牌输入框） |
-| `GPC_PUBLIC_URL` | 空（按请求头） | 清单里 `link`/`thumbnail` 的对外前缀，如 `http://192.168.50.4:13801`。**DSM 显示图标但点安装提示「下载失败」时，务必设为 DSM 实际可访问的地址** |
-| `GPC_DOWNLOAD_URL` | 空（同 `GPC_PUBLIC_URL`） | 只覆盖清单里的下载地址 `link`。DSM 的下载器在 NAS 本机建连接，可填 `http://127.0.0.1:13801` 直连容器端口；`thumbnail` 由浏览器加载，仍用 `GPC_PUBLIC_URL`。**不要直接把 `GPC_PUBLIC_URL` 写成 `127.0.0.1`**，否则套件中心图标会裂 |
-| `GPC_LINK_FINGERPRINT` | 空（关闭） | 设为 `1` 时下载地址变成 `/packages/<sha256>/<文件名>.spk`。默认关闭，与已验证可用的 `sspks-imnks` 一样用 `/packages/<文件名>.spk`；仅在同名包重打包后需要绕过 DSM 按 URL 缓存时打开 |
+| `GPC_PUBLIC_URL` | 空（按请求头） | 清单里 `link`/`thumbnail` 的**唯一**对外前缀，如 `http://192.168.50.4:13801`。**必须与 DSM 套件中心里填写的来源地址完全一致**（协议、IP、端口都要一样）：DSM 会校验下载链接与来源是否同源，不一致时在本地就拒绝，服务端收不到任何下载请求 |
 
 **DSM 清单字段**：完整对齐 `sspks-imnks` 的 `JsonOutput`（`price` / `start` / `thirdparty` / `category` / `subcategory` / `type` / `silent_*` 等）。`qinst` / `qstart` / `qupgrade` 由 SPK 里有无 `WIZARD_UIFILES` 决定，没有向导时为 `true`，让套件中心直接走安装流程；INFO 里显式写了则以 INFO 为准。DSM 下载器请求下载地址时不返回 `Content-Disposition`（与 nginx 静态文件一致），浏览器下载仍保留。
 

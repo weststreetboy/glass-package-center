@@ -23,12 +23,8 @@
     GPC_ADMIN_TOKEN     设置后，上传/删除/扫描需要携带该令牌
     GPC_PUBLIC_URL      清单里 link/thumbnail 的对外地址，如 http://192.168.50.4:13801
                         DSM 下载失败但图标正常时，设为 DSM 实际可访问的地址即可
-    GPC_DOWNLOAD_URL    只覆盖清单里的下载地址（link），留空则与 GPC_PUBLIC_URL 相同。
-                        DSM 下载器在 NAS 本机发起请求，可填 http://127.0.0.1:13801 直连容器；
-                        图标由浏览器加载，仍走 GPC_PUBLIC_URL，两者因此需要能分开配置
-    GPC_LINK_FINGERPRINT
-                        设为 1 时下载地址带内容指纹（/packages/<sha256>/<文件名>.spk），
-                        默认关闭：与 sspks-imnks 一致用 /packages/<文件名>.spk
+    （清单严格对齐 sspks-imnks：只有一个对外地址 GPC_PUBLIC_URL，
+      link/thumbnail 都由它生成，保证与 DSM 里填写的套件来源同源）
 """
 
 from __future__ import annotations
@@ -62,12 +58,9 @@ PORT = int(os.environ.get("GPC_PORT") or 80)
 # 若经反代或 DSM 带自定义 Host，按请求头拼出的地址可能与 DSM 实际可达地址不符。
 # 配置后（如 http://192.168.50.4:13801）清单地址固定，避免下载失败。
 PUBLIC_URL = (os.environ.get("GPC_PUBLIC_URL") or "").strip()
-# 只覆盖下载地址。DSM 的下载器在 NAS 本机起连接，可以走 127.0.0.1 直连发布到宿主机的端口；
-# 而 thumbnail 是浏览器加载的，必须用局域网地址。两者分开配置才不会出现「图标裂了」。
-DOWNLOAD_URL = (os.environ.get("GPC_DOWNLOAD_URL") or "").strip()
-# 下载地址是否带内容指纹。默认关闭，与 sspks-imnks 保持完全一致的
-# /packages/<文件名>.spk 形态；重打包同名包需要绕过 DSM 的按 URL 缓存时再打开。
-LINK_FINGERPRINT = (os.environ.get("GPC_LINK_FINGERPRINT") or "").strip().lower() in ("1", "true", "yes", "on")
+# 注意：sspks-imnks 只有一个 SSPKS_BASE_URL，link 与 thumbnail 共用它，保证
+# 下载地址与 DSM 里填写的套件来源同源。这里同样只用 PUBLIC_URL 一个地址，
+# 不再提供独立的下载域名/回环地址——跨主机的 link 会被 DSM 在本地直接拒绝。
 ADMIN_TOKEN = (os.environ.get("GPC_ADMIN_TOKEN") or "").strip()
 MAX_UPLOAD_BYTES = int(float(os.environ.get("GPC_MAX_UPLOAD_MB") or 2048) * 1024 * 1024)
 CHUNK_BYTES = 8 * 1024 * 1024
@@ -596,12 +589,13 @@ def scan_loop() -> None:
 # --------------------------------------------------------------------------- #
 # DSM 清单
 # --------------------------------------------------------------------------- #
-def dsm_payload(arch: str, origin: str, download_origin: str = "") -> dict:
+def dsm_payload(arch: str, origin: str) -> dict:
     arch = (arch or "x86_64").lower()
     if arch not in ("x86_64", "armv8"):
         arch = "noarch" if arch == "noarch" else "x86_64"
-    # origin 用于 thumbnail（浏览器加载），download_origin 用于 link（DSM 本机下载）
-    dl = (download_origin or origin).rstrip("/")
+    # 与 sspks-imnks 一致：唯一对外地址，link 与 thumbnail 同源。
+    # 对应 UrlFixer::__construct(baseUrl) + makeAbsolute(encodePath(spk))。
+    base = origin.rstrip("/") + "/"
     items = []
     for e in all_entries():
         # 已下线的套件不出现在 DSM 套件来源里
@@ -616,11 +610,13 @@ def dsm_payload(arch: str, origin: str, download_origin: str = "") -> dict:
         path = e.get("path") or os.path.join(BUILTIN_DIR, e["file"])
         if not os.path.isfile(path):
             continue
-        # 文件指纹只在开启 LINK_FINGERPRINT 时用于拼下载地址（见该常量注释）
-        fingerprint = (_sha256_file(path) or md5_file(path)) if LINK_FINGERPRINT else ""
         file_name = os.path.basename(e["file"])
-        quoted_name = urllib.parse.quote(file_name)
-        icon_base = f"{origin}/api/icon/{quoted_name}"
+        # encodePath：每个路径段单独 urlencode（对应 UrlFixer::encodePath）
+        quoted_name = urllib.parse.quote(file_name, safe="")
+        # link = baseUrl + packages/<文件名>，与来源同源，以 .spk 结尾
+        link = f"{base}packages/{quoted_name}"
+        # 图标同源；sspks 的 thumbnail 只有两个实际尺寸，没有 thumbnail_retina
+        icon_base = f"{base}api/icon/{quoted_name}"
         # 清单里的版本/名称/发布者一律取 SPK 自己的 INFO（带缓存），
         # 否则详情页的「开发者 / 发布人员 / 最新在线版本」会是写死值或空白。
         info = spk_info(path)
@@ -637,11 +633,6 @@ def dsm_payload(arch: str, origin: str, download_origin: str = "") -> dict:
         # 与 sspks-imnks 一致：没有 WIZARD_UIFILES 的包默认 qinst/qstart/qupgrade=true，
         # 套件中心直接走「安装」；INFO 里显式写了的以 INFO 为准。
         quick = not spk_has_wizard(path)
-        link = (
-            f"{dl}/packages/{fingerprint}/{quoted_name}"
-            if LINK_FINGERPRINT
-            else f"{dl}/packages/{quoted_name}"
-        )
         items.append(
             {
                 "package": e.get("en") or e.get("id"),
@@ -656,10 +647,8 @@ def dsm_payload(arch: str, origin: str, download_origin: str = "") -> dict:
                 "link": link,
                 "size": os.path.getsize(path),
                 "md5": md5_file(path),
-                # DSM 只认 thumbnail 里的 URL：留空会让套件中心列表显示默认占位图标。
-                # [0]=72px 列表用，[1]=256px，retina 再给 256。
+                # sspks-imnks 的 thumbnail 只有实际尺寸数组，没有 thumbnail_retina
                 "thumbnail": [f"{icon_base}?size=72", f"{icon_base}?size=256"],
-                "thumbnail_retina": [f"{icon_base}?size=256", f"{icon_base}?size=256"],
                 "snapshot": [],
                 "qinst": _truthy(info.get("qinst"), quick),
                 "qstart": _truthy(info.get("qstart"), quick),
@@ -726,9 +715,6 @@ class Handler(BaseHTTPRequestHandler):
         host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "localhost").split(",")[0].strip()
         host = re.sub(r"[^0-9A-Za-z.\-:\[\]]", "", host) or "localhost"
         return f"{proto}://{host}"
-
-    def _download_origin(self) -> str:
-        return (DOWNLOAD_URL.rstrip("/") if DOWNLOAD_URL else self._origin())
 
     def _authorized(self) -> bool:
         if not ADMIN_TOKEN:
@@ -843,7 +829,7 @@ class Handler(BaseHTTPRequestHandler):
         # DSM 套件来源握手
         if unique.startswith("synology_"):
             arch = (query.get("arch") or ["x86_64"])[0]
-            self._json(dsm_payload(arch, self._origin(), self._download_origin()))
+            self._json(dsm_payload(arch, self._origin()))
             return
 
         # 部分 DSM 版本按 sspks 约定用 /packages?arch=… 拉索引（而不是 ?unique=）。
@@ -851,13 +837,13 @@ class Handler(BaseHTTPRequestHandler):
         # 列表能显示、点安装立刻「下载失败」，且服务端看起来「没收到任何请求」。
         if path in ("/packages", "/packages/"):
             arch = (query.get("arch") or ["x86_64"])[0]
-            self._json(dsm_payload(arch.strip() or "x86_64", self._origin(), self._download_origin()))
+            self._json(dsm_payload(arch.strip() or "x86_64", self._origin()))
             return
 
         # sspks 风格清单：/synology_x86_64.json（不带 /dsm/ 前缀）
         m = re.match(r"^/synology_([a-z0-9_]+)\.json$", path)
         if m:
-            self._json(dsm_payload(m.group(1), self._origin(), self._download_origin()))
+            self._json(dsm_payload(m.group(1), self._origin()))
             return
 
         if path in ("/", "/index.html"):
@@ -916,7 +902,7 @@ class Handler(BaseHTTPRequestHandler):
             if not m:
                 self._error(404, "清单不存在")
                 return
-            self._json(dsm_payload(m.group(1), self._origin(), self._download_origin()))
+            self._json(dsm_payload(m.group(1), self._origin()))
             return
 
         if path.startswith("/packages/"):
@@ -974,7 +960,7 @@ class Handler(BaseHTTPRequestHandler):
                 "UA=", (self.headers.get("User-Agent") or "")[:60])
             m = re.match(r"^/dsm/synology[_-]([a-z0-9_]+)\.json$", path)
             arch = m.group(1) if m else (query.get("arch") or ["x86_64"])[0]
-            self._json(dsm_payload(arch, self._origin(), self._download_origin()))
+            self._json(dsm_payload(arch, self._origin()))
             return
 
         if path == "/api/upload":

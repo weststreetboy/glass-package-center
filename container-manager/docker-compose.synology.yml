@@ -3,9 +3,11 @@
 #
 # 与仓库里的 docker-compose.yml 相比只改了三处：
 #   1. ports 左侧改成 13801（与 NAS 上现有映射一致）
-#   2. GPC_PUBLIC_URL 保持局域网地址 —— 图标由浏览器加载，必须是 NAS 的局域网 IP
-#   3. 新增 GPC_DOWNLOAD_URL=http://127.0.0.1:13801 —— 只影响清单里的下载地址，
-#      DSM 的下载器在 NAS 本机发起请求，走回环直连容器端口，避开 Host/DNS/IPv6 干扰
+#   2. GPC_PUBLIC_URL 必须与 DSM 套件中心里填写的来源地址完全一致（含协议和端口），
+#      清单里的图标和下载链接都由它生成，保证与来源同源
+#   3. 只有一个对外地址 GPC_PUBLIC_URL，link/thumbnail 都从它生成。
+#      之前把 link 单独指到 127.0.0.1，与来源 192.168.50.4 不同源，
+#      DSM 会在本地直接拒绝，服务端连下载请求都收不到
 #
 # 注意：整份文件的缩进不能丢。Container Manager 里 YAML 若所有键都顶格（没有 2 空格缩进），
 #       会直接报格式错误，或被解析成空配置。
@@ -16,7 +18,7 @@ services:
     restart: unless-stopped
 
     ports:
-      # 宿主机端口:容器端口。端口冲突时只改左侧，并同步改 GPC_DOWNLOAD_URL
+      # 宿主机端口:容器端口。端口冲突时只改左侧，并同步改 GPC_PUBLIC_URL
       - "13801:80"
 
     environment:
@@ -33,14 +35,9 @@ services:
       GPC_MAX_UPLOAD_MB: "2048"
       # 管理口令：设置后上传 / 删除 / 手动扫描都需带上它；留空则不校验
       GPC_ADMIN_TOKEN: ""
-      # 图标/清单前缀：浏览器加载图标用，必须是 NAS 的局域网地址
+      # 清单前缀：必须与 DSM 里填写的套件来源地址完全一致（含协议、IP、端口）
+      # 图标和下载 link 都由它生成，保证与来源同源；改端口时这里和上面的 ports 一起改
       GPC_PUBLIC_URL: "http://192.168.50.4:13801"
-      # 下载地址前缀：DSM 下载器在 NAS 本机取包，走回环直连容器
-      # 若端口改了，这里要一起改；留空则与 GPC_PUBLIC_URL 相同
-      GPC_DOWNLOAD_URL: "http://127.0.0.1:13801"
-      # 下载地址是否带内容指纹（/packages/<sha256>/<文件名>.spk）。
-      # 默认关闭，与已验证可用的 sspks-imnks 一致；同名包重打包需绕过缓存时才设为 "1"
-      # GPC_LINK_FINGERPRINT: "1"
       # 调试日志：排障时改成 "1"
       GPC_VERBOSE: ""
 
