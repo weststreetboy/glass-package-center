@@ -41,6 +41,7 @@ import tarfile
 import threading
 import time
 import urllib.parse
+from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -765,20 +766,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        # DSM 下载器不需要 Content-Disposition（sspks 由 nginx 直接吐静态文件，
-        # 也没有这个头）。浏览器下载才加，中文名仍按 RFC 5987 用 filename* 传。
-        ua = self.headers.get("User-Agent") or ""
-        if download and not _is_dsm_ua(ua):
-            # 响应头只能是 latin-1：文件名含中文时直接 encode 会抛 UnicodeEncodeError，
-            # 连接被重置，DSM 侧表现就是「下载失败」。按 RFC 5987 用 filename* 传 UTF-8。
-            raw_name = os.path.basename(path)
-            ascii_name = raw_name.encode("ascii", "ignore").decode() or "package.spk"
-            quoted = urllib.parse.quote(raw_name)
-            self.send_header(
-                "Content-Disposition",
-                f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quoted}',
-            )
-        self.send_header("X-Content-Type-Options", "nosniff")
+        # 下载响应严格对齐 sspks-imnks 的 nginx `location ^~ /packages/` 静态语义：
+        # nginx 纯静态吐 .spk，不带 Content-Disposition，也不带 X-Content-Type-Options，
+        # 但自动补 Last-Modified / ETag。DSM 内置下载器（UA=curl/8.13.0）对这两个头
+        # 敏感：多一个 Content-Disposition 或少一个 Last-Modified 都会让它判定下载失败，
+        # 而同一台 NAS 上的 sspks 能下 —— 这是两者下载链路唯一残留的差异。
+        if download:
+            try:
+                mtime = os.path.getmtime(path)
+                self.send_header("Last-Modified", formatdate(mtime, usegmt=True))
+                self.send_header("ETag", f'"{int(mtime):x}-{size:x}"')
+            except OSError:
+                pass
+        else:
+            # 页面/接口等普通资源保留 nosniff，避免 XSS；下载的 SPK 不带。
+            self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         if self.command == "HEAD":
             return
