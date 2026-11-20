@@ -822,6 +822,28 @@ class Handler(BaseHTTPRequestHandler):
             log("请求", self.command, f"{path}{qs}",
                 "UA=", (self.headers.get("User-Agent") or "")[:60])
 
+        # 【关键】DSM 点安装时会请求清单里的 link，并在后面附加查询参数，
+        # 其中包含 unique=synology_<机型>（如 mode=install&nano=7）。
+        # 下载判断必须早于下面的 unique 清单握手，否则该请求会被当成清单
+        # 返回 application/json，DSM 把 JSON 当 SPK 下载→校验失败→「下载失败」。
+        # 这是同 NAS 上 sspks(nginx 静态直出)能下、glass 不能的根因。
+        if path.startswith("/packages/") and path not in ("/packages", "/packages/"):
+            name = os.path.basename(path)
+            # 下载请求始终记一行，便于判断 DSM 是否真的回连、带了什么 Range。
+            log("下载请求", self.command, name, "Range=", self.headers.get("Range"),
+                "unique=", unique or "-",
+                "UA=", (self.headers.get("User-Agent") or "")[:80])
+            entry = next((e for e in all_entries() if e.get("file") == name), None)
+            if entry and os.path.isfile(entry.get("path") or ""):
+                self._serve_file(entry["path"], "application/octet-stream", download=True)
+                return
+            builtin = os.path.join(BUILTIN_DIR, name)
+            if os.path.isfile(builtin):
+                self._serve_file(builtin, "application/octet-stream", download=True)
+                return
+            self._error(404, "安装包不存在")
+            return
+
         # 有些 DSM 版本会先拿基础地址探活（不带 unique 参数），若这时回首页 HTML
         # 会被判成「来源无效」；UA 像套件中心时一律回清单。
         if (not unique and path in ("/", "/index.html")
@@ -905,22 +927,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(404, "清单不存在")
                 return
             self._json(dsm_payload(m.group(1), self._origin()))
-            return
-
-        if path.startswith("/packages/"):
-            name = os.path.basename(path)
-            # 下载请求始终记一行，便于判断 DSM 是否真的回连、带了什么 Range。
-            log("下载请求", self.command, name, "Range=", self.headers.get("Range"),
-                "UA=", (self.headers.get("User-Agent") or "")[:80])
-            entry = next((e for e in all_entries() if e.get("file") == name), None)
-            if entry and os.path.isfile(entry.get("path") or ""):
-                self._serve_file(entry["path"], "application/octet-stream", download=True)
-                return
-            builtin = os.path.join(BUILTIN_DIR, name)
-            if os.path.isfile(builtin):
-                self._serve_file(builtin, "application/octet-stream", download=True)
-                return
-            self._error(404, "安装包不存在")
             return
 
         # 静态文件（如有）
