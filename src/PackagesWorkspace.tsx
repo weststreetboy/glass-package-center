@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type CSSProperties,
 } from "react";
 import { gsap } from "gsap";
@@ -209,6 +210,8 @@ function StatBars({ values, fill }: { values: number[]; fill: (index: number, va
 
 
 const SOURCE_KEY = "wb_gpc_source_url";
+const SITE_NAME_KEY = "gpc_site_name";
+const SITE_LOGO_KEY = "gpc_site_logo";
 type SourceCfg = {
   url: string;
   note: string;
@@ -336,9 +339,17 @@ export default function PackagesWorkspace({
 }) {
   const root = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
-  const settingsTrigger = useRef<HTMLButtonElement>(null);
   const id = useId().replace(/:/g, "");
   const [view, setView] = useState<View>("browse");
+  // 点击上传/设置这类"动作项"时临时接管 active，让水滴滑过去再弹回（不改变实际 view）。
+  const [liquidPulse, setLiquidPulse] = useState<number | null>(null);
+  const liquidPulseTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (liquidPulseTimer.current) window.clearTimeout(liquidPulseTimer.current); }, []);
+  function pulseLiquid(idx: number) {
+    setLiquidPulse(idx);
+    if (liquidPulseTimer.current) window.clearTimeout(liquidPulseTimer.current);
+    liquidPulseTimer.current = window.setTimeout(() => setLiquidPulse(null), 900);
+  }
   const [material, setMaterial] = useState(() => normalize(defaults));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [localTheme, setLocalTheme] = useState(theme);
@@ -359,6 +370,16 @@ export default function PackagesWorkspace({
   const [serverMode, setServerMode] = useState(false);
   const [tokenRequired, setTokenRequired] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
+  // 站点品牌定制：名称与 Logo 存在浏览器本地，纯静态页面也能生效
+  const [siteName, setSiteName] = useState<string>(() => {
+    try { return window.localStorage.getItem(SITE_NAME_KEY) || brand; } catch { return brand; }
+  });
+  const [siteLogo, setSiteLogo] = useState<string>(() => {
+    try { return window.localStorage.getItem(SITE_LOGO_KEY) || ""; } catch { return ""; }
+  });
+  const [siteNameDraft, setSiteNameDraft] = useState("");
+  const [editingSiteName, setEditingSiteName] = useState(false);
+  const siteLogoInput = useRef<HTMLInputElement>(null);
 
   const loadPackages = async () => {
     try {
@@ -537,25 +558,48 @@ export default function PackagesWorkspace({
   }
   function closeSettings() {
     setSettingsOpen(false);
-    settingsTrigger.current?.focus();
   }
   function changeView(next: View) {
     setView(next);
     setAlerts(false);
     setSelected(null);
   }
+  function openUpload() {
+    if (serverMode) {
+      setUploadOpen(true);
+      setAlerts(false);
+      setSettingsOpen(false);
+    } else {
+      setNotice("当前是静态页面，上传需在容器中运行服务");
+    }
+  }
+  function toggleSettings() {
+    setSettingsOpen((v) => !v);
+    setAlerts(false);
+  }
 
-  // Liquid Navbar 与现有 tab 共用同一套 view 状态：把 5 个 tab 映射成导航项。
-  const liquidItems = useMemo(
-    () =>
-      tabs.map((tab, i) => ({
-        label: tab.label,
-        icon: <tab.icon size={18} strokeWidth={1.7} aria-hidden="true" />,
+  // 液态导航 7 项顺序：套件·打包·已收录·机型·上传·设置·关于
+  // 上传/设置两个动作项插在「机型」与「关于」之间，故用显式映射而非单一偏移。
+  const LIQUID_UPLOAD_IDX = 4;
+  const LIQUID_SETTINGS_IDX = 5;
+  const LIQUID_VIEW_IDX = [0, 1, 2, 3, 6]; // 液态项索引 → tabs 索引（关于挪到第 6 位）
+  const liquidItems = useMemo(() => {
+    const tabItem = (i: number) => {
+      const Icon = tabs[i].icon;
+      return {
+        label: tabs[i].label,
+        icon: <Icon size={18} strokeWidth={1.7} aria-hidden="true" />,
         fx: LIQUID_FX[i] ?? "pop",
-      })),
-    [],
-  );
-  const liquidActive = Math.max(0, tabs.findIndex((t) => t.id === view));
+      };
+    };
+    return [
+      tabItem(0), tabItem(1), tabItem(2), tabItem(3),
+      { label: "上传套件", icon: <Upload size={18} strokeWidth={1.7} aria-hidden="true" />, fx: "glow" as NimbusFx },
+      { label: "站点设置", icon: <Settings2 size={18} strokeWidth={1.7} aria-hidden="true" />, fx: "spin" as NimbusFx },
+      tabItem(4),
+    ];
+  }, []);
+  const liquidActive = LIQUID_VIEW_IDX[Math.max(0, tabs.findIndex((t) => t.id === view))];
 
   // 跟随宿主明暗主题（main.tsx 把主题写在 documentElement 的 data-host-theme 上）。
   const [liquidTone, setLiquidTone] = useState<"light" | "dark">(() => {
@@ -642,6 +686,64 @@ export default function PackagesWorkspace({
     setEditingSource(false);
     setNotice("套件来源地址已保存");
   }
+  // ---- 站点品牌定制 ----
+  function saveSiteName() {
+    const next = siteNameDraft.trim().slice(0, 40);
+    if (!next) {
+      setNotice("站点名称不能为空");
+      return;
+    }
+    setSiteName(next);
+    try { window.localStorage.setItem(SITE_NAME_KEY, next); } catch { /* ignore */ }
+    setEditingSiteName(false);
+    setNotice("站点名称已保存");
+  }
+  function resetSiteName() {
+    setSiteName(brand);
+    try { window.localStorage.removeItem(SITE_NAME_KEY); } catch { /* ignore */ }
+    setEditingSiteName(false);
+    setNotice("站点名称已恢复默认");
+  }
+  // 把上传的图片压缩到 128×128 的 PNG data URL，避免撑爆 localStorage。
+  function handleSiteLogo(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setNotice("请选择图片文件");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const size = 128;
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) { setNotice("图片处理失败"); return; }
+        // 居中裁成正方形，保持清晰
+        const side = Math.min(img.width, img.height);
+        const sx = (img.width - side) / 2;
+        const sy = (img.height - side) / 2;
+        ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
+        const data = canvas.toDataURL("image/png");
+        setSiteLogo(data);
+        try { window.localStorage.setItem(SITE_LOGO_KEY, data); } catch { setNotice("Logo 太大，保存失败"); return; }
+        setNotice("站点 Logo 已更新");
+      };
+      img.onerror = () => setNotice("图片读取失败");
+      img.src = String(reader.result || "");
+    };
+    reader.readAsDataURL(file);
+  }
+  function resetSiteLogo() {
+    setSiteLogo("");
+    try { window.localStorage.removeItem(SITE_LOGO_KEY); } catch { /* ignore */ }
+    setNotice("站点 Logo 已恢复默认");
+  }
+
   function download(p: Pkg) {
     const a = document.createElement("a");
     a.href = `packages/${p.file}`;
@@ -845,38 +947,35 @@ export default function PackagesWorkspace({
             href="#"
             onClick={(e) => { e.preventDefault(); changeView("browse"); }}
           >
-            <span className="gw-brand-icon"><Layers size={18} strokeWidth={1.7} aria-hidden="true" /></span>
-            <strong>{brand}</strong>
+            <span className="gw-brand-icon">
+              {siteLogo
+                ? <img src={siteLogo} alt="" className="gw-brand-logo" />
+                : <Layers size={18} strokeWidth={1.7} aria-hidden="true" />}
+            </span>
+            <strong>{siteName}</strong>
             <span className="gw-brand-divider" />
             <span className="gw-personal">群晖 DSM 7 · 自建套件源</span>
           </a>
           <div className="gw-toolbar">
             <button
               type="button"
-              className="gw-adjust"
-              onClick={() => {
-                if (serverMode) {
-                  setUploadOpen(true);
-                  setAlerts(false);
-                  setSettingsOpen(false);
-                } else {
-                  setNotice("当前是静态页面，上传需在容器中运行服务");
-                }
-              }}
+              className="gw-icon-button gw-tool-mobile"
+              aria-label="上传套件"
+              title="上传"
+              onClick={openUpload}
             >
-              <Upload size={16} aria-hidden="true" />
-              <span>上传</span>
+              <Upload size={17} aria-hidden="true" />
             </button>
             <button
               type="button"
-              className="gw-adjust"
-              ref={settingsTrigger}
-              onClick={() => { setSettingsOpen(!settingsOpen); setAlerts(false); }}
+              className="gw-icon-button gw-tool-mobile"
+              aria-label="设置"
+              title="设置"
+              onClick={toggleSettings}
               aria-expanded={settingsOpen}
               aria-controls={`${id}-material`}
             >
-              <Settings2 size={16} aria-hidden="true" />
-              <span>设置</span>
+              <Settings2 size={17} aria-hidden="true" />
             </button>
             {!useHostTheme && (
               <button type="button" className="gw-icon-button" aria-label="切换明暗主题" onClick={toggleTheme}>
@@ -901,16 +1000,26 @@ export default function PackagesWorkspace({
         </header>
 
         <div className="gw-stage">
-          <div className="gpc-liquid-rail">
-            <LiquidNavbar
-              items={liquidItems}
-              active={liquidActive}
-              tone={liquidTone}
-              compact
-              vertical
-              onChange={(i) => changeView(tabs[i].id)}
-            />
-          </div>
+          <aside className="gpc-rail-tools" aria-label="工具">
+            <div className="gpc-rail-nav-wrap">
+              <LiquidNavbar
+                items={liquidItems}
+                active={liquidPulse ?? liquidActive}
+                tone={liquidTone}
+                compact
+                vertical
+                onChange={(i) => {
+                  if (i === LIQUID_UPLOAD_IDX) { pulseLiquid(i); openUpload(); }
+                  else if (i === LIQUID_SETTINGS_IDX) { pulseLiquid(i); toggleSettings(); }
+                  else {
+                    setLiquidPulse(null);
+                    const tabIdx = LIQUID_VIEW_IDX.indexOf(i);
+                    if (tabIdx >= 0) changeView(tabs[tabIdx].id);
+                  }
+                }}
+              />
+            </div>
+          </aside>
           <main className="gw-main gw-glass">
             <div className="gw-view-heading">
               <div>
@@ -1231,7 +1340,7 @@ export default function PackagesWorkspace({
                       </div>
                       <p className="pc-about">
                         本页采用玻璃工作台的玻璃拟态设计语言重制，数据来自本地 SSPKS-IMNKS 套件源中的真实 SPK（{pkgs.length} 个）。
-                        调整右上角的<strong>设置</strong>可实时改变玻璃材质。
+                        点击左侧的<strong>设置</strong>可修改站点名称、Logo 与玻璃材质。
                       </p>
                       <a
                         className="gw-button pc-about-link"
@@ -1278,21 +1387,95 @@ export default function PackagesWorkspace({
         )}
 
         {settingsOpen && (
-          <aside className="gw-material gw-glass" id={`${id}-material`} aria-label="玻璃外观">
+          <aside className="gw-material gw-glass" id={`${id}-material`} aria-label="站点设置">
             <div className="gw-material-title">
               <div>
                 <span className="gw-material-icon"><Settings2 size={18} aria-hidden="true" /></span>
-                <h2>玻璃外观</h2>
+                <h2>站点设置</h2>
               </div>
-              <button type="button" className="gw-icon-button" aria-label="关闭玻璃设置" onClick={closeSettings}>
+              <button type="button" className="gw-icon-button" aria-label="关闭设置" onClick={closeSettings}>
                 <X size={18} aria-hidden="true" />
               </button>
             </div>
-            <p>调整整个工作区中的玻璃材质。</p>
-            <div className="gw-material-sample" aria-hidden="true">
-              <Layers size={28} strokeWidth={1.1} />
-              <span>实时材质预览</span>
+
+            {/* 站点信息：名称 + Logo，保存在本机浏览器 */}
+            <div className="gw-set-group">
+              <h3 className="gw-set-group-title">站点信息</h3>
+              <div className="gw-site-name">
+                {editingSiteName ? (
+                  <>
+                    <input
+                      className="gw-site-name-input"
+                      value={siteNameDraft}
+                      autoFocus
+                      maxLength={40}
+                      aria-label="站点名称"
+                      onChange={(e) => setSiteNameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") saveSiteName();
+                        if (e.key === "Escape") setEditingSiteName(false);
+                      }}
+                    />
+                    <button type="button" className="gw-button pc-copy" onClick={saveSiteName}>
+                      <Check size={14} aria-hidden="true" />保存
+                    </button>
+                    <button type="button" className="gw-button pc-copy" onClick={() => setEditingSiteName(false)}>
+                      <X size={14} aria-hidden="true" />取消
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span className="gw-site-name-value">{siteName}</span>
+                    <button
+                      type="button"
+                      className="gw-button pc-copy"
+                      onClick={() => { setSiteNameDraft(siteName); setEditingSiteName(true); }}
+                    >
+                      <Pencil size={14} aria-hidden="true" />修改名称
+                    </button>
+                    {siteName !== brand && (
+                      <button type="button" className="gw-button pc-copy" onClick={resetSiteName}>
+                        <X size={14} aria-hidden="true" />重置
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+              <div className="gw-site-logo-row">
+                <span className="gw-site-logo-preview">
+                  {siteLogo
+                    ? <img src={siteLogo} alt="站点 Logo 预览" />
+                    : <Layers size={20} strokeWidth={1.6} aria-hidden="true" />}
+                </span>
+                <div className="gw-site-logo-actions">
+                  <button type="button" className="gw-button pc-copy" onClick={() => siteLogoInput.current?.click()}>
+                    <Upload size={14} aria-hidden="true" />{siteLogo ? "更换 Logo" : "上传 Logo"}
+                  </button>
+                  {siteLogo && (
+                    <button type="button" className="gw-button pc-copy" onClick={resetSiteLogo}>
+                      <X size={14} aria-hidden="true" />移除
+                    </button>
+                  )}
+                </div>
+                <input
+                  ref={siteLogoInput}
+                  type="file"
+                  accept="image/*"
+                  className="gw-site-logo-file"
+                  aria-label="上传站点 Logo 图片"
+                  onChange={handleSiteLogo}
+                />
+              </div>
+              <p className="gw-set-hint">名称与 Logo 只保存在本机浏览器，刷新后依然生效；自动压缩为 128×128。</p>
             </div>
+
+            <div className="gw-set-group">
+              <h3 className="gw-set-group-title">玻璃外观</h3>
+              <p>调整整个工作区中的玻璃材质。</p>
+              <div className="gw-material-sample" aria-hidden="true">
+                <Layers size={28} strokeWidth={1.1} />
+                <span>实时材质预览</span>
+              </div>
             <div className="gw-presets" aria-label="玻璃预设">
               {[
                 { name: "清透", value: { blur: 8, opacity: 0.12, saturation: 1.1, edge: 0.8 } },
@@ -1328,6 +1511,7 @@ export default function PackagesWorkspace({
             <button className="gw-reset" type="button" onClick={() => updateGlass(normalize(defaults))}>
               重置外观
             </button>
+            </div>
           </aside>
         )}
       </div>
@@ -1420,9 +1604,29 @@ export default function PackagesWorkspace({
 }
 
 const pcStyles = `
-.gpc-liquid-rail{flex:none;width:60px;height:270px;margin-top:50px;display:flex;align-items:center;justify-content:center;position:relative;z-index:3}
-.gpc-liquid-rail .nimbus-nav{transform-origin:center center}
-@media (max-width:1050px){.gpc-liquid-rail{display:none}}
+.gpc-rail-tools{flex:none;width:60px;margin-top:50px;display:flex;flex-direction:column;align-items:center;gap:10px;position:relative;z-index:3}
+/* 竖向液态导航旋转 90° 后视觉高度=原宽度，用固定占位块撑开布局；7 项约 318px */
+.gpc-rail-nav-wrap{flex:none;width:54px;height:318px;display:flex;align-items:center;justify-content:center;position:relative}
+.gpc-rail-tools .nimbus-nav{transform-origin:center center}
+.gw-tool-mobile{display:none}
+.gw-brand-logo{width:100%;height:100%;border-radius:inherit;object-fit:cover;display:block}
+.gw-set-group{border-top:1px solid var(--gw-line);padding-top:16px;margin-top:4px}
+.gw-set-group:first-of-type{border-top:0;padding-top:0;margin-top:0}
+.gw-set-group-title{font-size:12px;font-weight:600;color:var(--gw-ink);margin:0 0 12px}
+.gw-set-group>p{font-size:11px;color:var(--gw-muted);margin:2px 0 14px}
+.gw-site-name{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.gw-site-name-value{font-size:13px;font-weight:600;color:var(--gw-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.gw-site-name-input{flex:1;min-width:0;padding:6px 9px;border-radius:8px;border:1px solid var(--gw-accent);background:var(--gw-panel);color:var(--gw-text);font-size:12px}
+.gw-site-logo-row{display:flex;align-items:center;gap:12px;margin-top:14px}
+.gw-site-logo-preview{width:46px;height:46px;border-radius:13px;flex:none;display:grid;place-items:center;overflow:hidden;background:var(--gw-brand);color:var(--gw-brand-ink)}
+.gw-site-logo-preview img{width:100%;height:100%;object-fit:cover}
+.gw-site-logo-actions{display:flex;gap:8px;flex-wrap:wrap}
+.gw-site-logo-file{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.gw-set-hint{font-size:10px;color:var(--gw-muted);line-height:1.55;margin:12px 0 0}
+@media (max-width:1050px){
+  .gpc-rail-tools{display:none}
+  .gw-tool-mobile{display:grid}
+}
 .pc-card{cursor:pointer;display:flex;flex-direction:column;gap:12px;transition:transform .18s ease,box-shadow .18s ease}
 .pc-card:hover,.pc-card:focus-visible{transform:translateY(-3px)}
 .pc-card-top{display:flex;align-items:center;gap:11px}
