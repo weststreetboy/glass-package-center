@@ -10,6 +10,7 @@ import {
 } from "react";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
+import LiquidNavbar, { type NimbusFx } from "./LiquidNavbar";
 import {
   ArrowDownRight,
   ArrowDownToLine,
@@ -100,6 +101,9 @@ const tabs = [
   { id: "about", label: "关于", icon: Info },
 ] as const;
 type View = (typeof tabs)[number]["id"];
+
+// 每个 tab 在 Liquid Navbar 里播放的小动画，与 LiquidNavbar 的 items 顺序一一对应
+const LIQUID_FX: NimbusFx[] = ["glow", "spin", "plane", "drop", "wave"];
 
 const CATS = ["全部", "网络", "多媒体", "工具", "系统", "开发", "安全"] as const;
 const ARCHS = ["x86_64", "armv8", "noarch"] as const;
@@ -540,6 +544,40 @@ export default function PackagesWorkspace({
     setAlerts(false);
     setSelected(null);
   }
+
+  // Liquid Navbar 与现有 tab 共用同一套 view 状态：把 5 个 tab 映射成导航项。
+  const liquidItems = useMemo(
+    () =>
+      tabs.map((tab, i) => ({
+        label: tab.label,
+        icon: <tab.icon size={18} strokeWidth={1.7} aria-hidden="true" />,
+        fx: LIQUID_FX[i] ?? "pop",
+      })),
+    [],
+  );
+  const liquidActive = Math.max(0, tabs.findIndex((t) => t.id === view));
+
+  // 跟随宿主明暗主题（main.tsx 把主题写在 documentElement 的 data-host-theme 上）。
+  const [liquidTone, setLiquidTone] = useState<"light" | "dark">(() => {
+    const host = document.documentElement.getAttribute("data-host-theme");
+    const sysDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+    return (host ?? (sysDark ? "dark" : "light")) === "dark" ? "dark" : "light";
+  });
+  useEffect(() => {
+    const sync = () => {
+      const host = document.documentElement.getAttribute("data-host-theme");
+      const sysDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+      setLiquidTone((host ?? (sysDark ? "dark" : "light")) === "dark" ? "dark" : "light");
+    };
+    const mo = new MutationObserver(sync);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-host-theme"] });
+    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+    mq?.addEventListener?.("change", sync);
+    return () => {
+      mo.disconnect();
+      mq?.removeEventListener?.("change", sync);
+    };
+  }, []);
   function toggleTheme() {
     const scheme = root.current
       ? getComputedStyle(root.current).colorScheme
@@ -863,7 +901,16 @@ export default function PackagesWorkspace({
         </header>
 
         <div className="gw-stage">
-          {nav(true)}
+          <div className="gpc-liquid-rail">
+            <LiquidNavbar
+              items={liquidItems}
+              active={liquidActive}
+              tone={liquidTone}
+              compact
+              vertical
+              onChange={(i) => changeView(tabs[i].id)}
+            />
+          </div>
           <main className="gw-main gw-glass">
             <div className="gw-view-heading">
               <div>
@@ -1373,6 +1420,9 @@ export default function PackagesWorkspace({
 }
 
 const pcStyles = `
+.gpc-liquid-rail{flex:none;width:60px;height:270px;margin-top:50px;display:flex;align-items:center;justify-content:center;position:relative;z-index:3}
+.gpc-liquid-rail .nimbus-nav{transform-origin:center center}
+@media (max-width:1050px){.gpc-liquid-rail{display:none}}
 .pc-card{cursor:pointer;display:flex;flex-direction:column;gap:12px;transition:transform .18s ease,box-shadow .18s ease}
 .pc-card:hover,.pc-card:focus-visible{transform:translateY(-3px)}
 .pc-card-top{display:flex;align-items:center;gap:11px}

@@ -3,6 +3,7 @@ node_modules/
 
 # 构建中间产物（成品在 webroot/）
 dist/
+dist-web3/
 
 # 系统 / 编辑器
 .DS_Store

@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* shadcn 风格语义变量（oklch），Web3Bento 的 utility class 与 color-mix 依赖这些变量 */
+:root {
+  color-scheme: light;
+  --color-background: oklch(0.97 0.008 250);
+  --color-foreground: oklch(0.22 0.02 260);
+  --color-card: oklch(1 0 0);
+  --color-card-foreground: oklch(0.22 0.02 260);
+  --color-muted: oklch(0.94 0.006 250);
+  --color-muted-foreground: oklch(0.55 0.02 255);
+  --color-border: oklch(0.9 0.008 250);
+  --color-ring: oklch(0.72 0.16 130);
+}
+
+html[data-w3-theme="dark"] {
+  color-scheme: dark;
+  --color-background: oklch(0.18 0.018 260);
+  --color-foreground: oklch(0.96 0.005 250);
+  --color-card: oklch(0.24 0.02 260);
+  --color-card-foreground: oklch(0.96 0.005 250);
+  --color-muted: oklch(0.31 0.02 260);
+  --color-muted-foreground: oklch(0.72 0.02 255);
+  --color-border: oklch(0.34 0.02 260);
+  --color-ring: oklch(0.72 0.16 130);
+}
+
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.w3-stage {
+  min-height: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 32px 20px 80px;
+  background-image:
+    radial-gradient(60% 50% at 12% 0%, color-mix(in oklch, oklch(0.85 0.12 130) 20%, transparent), transparent 70%),
+    radial-gradient(50% 45% at 92% 8%, color-mix(in oklch, oklch(0.82 0.12 300) 18%, transparent), transparent 70%);
+}
+
+.w3-theme-toggle {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 9999;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  color: var(--color-foreground);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  box-shadow: 0 6px 18px -8px oklch(0 0 0 / 0.4);
+}
